@@ -55,6 +55,13 @@ in the local part.
 
 ### Accepting the change
 
+Header search is opt-in. `storage.search-index.email.fields` must be set and
+must include `email-headers`, because the indexing path has no "empty means index
+everything" fallback for headers. Without it no header terms are written at all
+and every `HEADER` search returns nothing, which looks like a broken patch rather
+than a missing setting. Note the `storage.` prefix: `search-index.email.fields`
+is silently accepted and never read.
+
 Against a scratch mailbox, append three messages with Message-IDs
 `<alpha@aaa.example>`, `<beta@aaa.example>` and `<gamma@zzz.invalid>`, then:
 
@@ -67,6 +74,14 @@ SEARCH HEADER Message-ID <nonexistent@aaa.example>  -> (no results)
 
 Before the patch the first, second and fourth each returned both message 1 and
 message 2.
+
+The client-shaped version of the same check: append several messages whose
+Message-IDs differ only in the local part, as a draft client does on each
+autosave. Before the patch every one of them matches all of the others; after it
+each resolves to exactly one message.
+
+`SEARCH HEADER Message-ID aaa` still matches both `<alpha@aaa.example>` and
+`<beta@aaa.example>`, which is correct: both headers do contain that token.
 
 ## Licensing and the build
 
