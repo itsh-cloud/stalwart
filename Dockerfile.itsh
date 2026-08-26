@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1
+#
+# ITSH fork image. Mirrors upstream's musl/alpine runtime so it is a drop-in
+# replacement for stalwartlabs/stalwart:<version>-alpine, with two differences:
+#
+#   1. Built WITHOUT the "enterprise" cargo feature. Every file licensed solely
+#      under LicenseRef-SEL is gated behind that feature, so the resulting
+#      binary is AGPL-3.0-only and redistributable. The gated features are inert
+#      without a licence key regardless.
+#   2. No sccache or FoundationDB. Upstream wires sccache to the GitHub Actions
+#      cache and builds an extra FoundationDB binary; neither is used here, and
+#      buildx layer caching covers the rebuild path.
+#
+# The feature set is otherwise identical to upstream's image.
+
+ARG TARGET=x86_64-unknown-linux-musl
+ARG FEATURES="sqlite postgres mysql rocks s3 redis azure nats"
+ARG ZIG_VERSION=0.13.0
+
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:slim-trixie AS base
+ARG ZIG_VERSION
+ENV DEBIAN_FRONTEND=noninteractive \
+    BINSTALL_DISABLE_TELEMETRY=true \
+    CARGO_TERM_COLOR=always \
+    LANG=C.UTF-8 \
+    TZ=UTC
+# zig provides the musl cross-compilation toolchain used by cargo-zigbuild.
+RUN apt-get update && \
+    apt-get install -yq --no-install-recommends curl jq xz-utils make libclang-19-dev ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+RUN curl --retry 5 -Ls "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-$(uname -m)-${ZIG_VERSION}.tar.xz" \
+      | tar -J -x -C /usr/local && \
+    ln -s "/usr/local/zig-linux-$(uname -m)-${ZIG_VERSION}/zig" /usr/local/bin/zig
+RUN curl --retry 5 -L --proto '=https' --tlsv1.2 -sSf \
+      https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash && \
+    cargo binstall --no-confirm cargo-chef cargo-zigbuild
+
+FROM base AS planner
+WORKDIR /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM base AS builder
+WORKDIR /app
+ARG TARGET
+ARG FEATURES
+RUN rustup target add ${TARGET}
+# Dependencies first, so a source-only change does not rebuild the world.
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --recipe-path recipe.json --zigbuild --release --target ${TARGET} \
+      -p stalwart --no-default-features --features "${FEATURES}" && \
+    cargo chef cook --recipe-path recipe.json --zigbuild --release --target ${TARGET} \
+      -p stalwart-cli
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo zigbuild --release --target ${TARGET} -p stalwart --no-default-features --features "${FEATURES}" && \
+    cargo zigbuild --release --target ${TARGET} -p stalwart-cli && \
+    mkdir -p /artifact && \
+    mv target/${TARGET}/release/stalwart /artifact/stalwart && \
+    mv target/${TARGET}/release/stalwart-cli /artifact/stalwart-cli
+
+FROM --platform=$TARGETPLATFORM docker.io/library/alpine AS musl
+WORKDIR /opt/stalwart
+RUN apk add --update --no-cache ca-certificates tzdata && rm -rf /var/cache/apk/*
+COPY --from=builder /artifact/stalwart /usr/local/bin
+COPY --from=builder /artifact/stalwart-cli /usr/local/bin
+COPY ./resources/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod -R 755 /usr/local/bin
+CMD ["/usr/local/bin/stalwart"]
+VOLUME [ "/opt/stalwart" ]
+EXPOSE 443 25 110 587 465 143 993 995 4190 8080
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/entrypoint.sh"]
