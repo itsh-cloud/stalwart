@@ -153,7 +153,8 @@ impl Store {
                                             },
                                         ),
                                         field.u8_id(),
-                                        true,
+                                        // ITSH fork: intersect, not union. See FORK.md.
+                                        false,
                                     )
                                     .await?
                             } else {
