@@ -6,7 +6,7 @@
 
 use crate::BlobStore;
 use registry::schema::structs;
-use s3::{Bucket, Region, creds::Credentials};
+use s3::{Bucket, Region, creds::Credentials, error::S3Error};
 use std::{io::Write, ops::Range, sync::Arc, time::Duration};
 use utils::codec::base32_custom::Base32Writer;
 
@@ -100,7 +100,7 @@ impl S3Store {
         let mut retries_left = self.max_retries;
 
         loop {
-            let response = if range.start != 0 || range.end != usize::MAX {
+            let result = if range.start != 0 || range.end != usize::MAX {
                 self.bucket
                     .get_object_range(
                         &path,
@@ -110,21 +110,20 @@ impl S3Store {
                     .await
             } else {
                 self.bucket.get_object(&path).await
-            }
-            .map_err(into_error)?;
+            };
+
+            let response = match result {
+                Ok(response) => response,
+                Err(err) => {
+                    self.retry_or_fail(err, &mut retries_left).await?;
+                    continue;
+                }
+            };
 
             match response.status_code() {
                 200..=299 => return Ok(Some(response.to_vec())),
                 404 => return Ok(None),
-                500..=599 if retries_left > 0 => {
-                    // wait backoff
-                    tokio::time::sleep(Duration::from_secs(
-                        1 << (self.max_retries - retries_left).min(6),
-                    ))
-                    .await;
-
-                    retries_left -= 1;
-                }
+                500..=599 if retries_left > 0 => self.consume_retry(&mut retries_left).await,
                 code => {
                     return Err(trc::StoreEvent::S3Error
                         .reason(String::from_utf8_lossy(response.as_slice()))
@@ -139,11 +138,13 @@ impl S3Store {
         let mut retries_left = self.max_retries;
 
         loop {
-            let response = self
-                .bucket
-                .put_object(&path, data)
-                .await
-                .map_err(into_error)?;
+            let response = match self.bucket.put_object(&path, data).await {
+                Ok(response) => response,
+                Err(err) => {
+                    self.retry_or_fail(err, &mut retries_left).await?;
+                    continue;
+                }
+            };
 
             match response.status_code() {
                 200..=299 => {
@@ -154,18 +155,18 @@ impl S3Store {
                     // Some S3-compatible backends acknowledge a PUT before the
                     // write is durable. HEAD the object to confirm it is visible
                     // to the read path before reporting success.
-                    let (_, head_status) =
-                        self.bucket.head_object(&path).await.map_err(into_error)?;
+                    let head_status = match self.bucket.head_object(&path).await {
+                        Ok((_, status)) => status,
+                        Err(err) => {
+                            self.retry_or_fail(err, &mut retries_left).await?;
+                            continue;
+                        }
+                    };
 
                     match head_status {
                         200..=299 => return Ok(()),
                         404 | 500..=599 if retries_left > 0 => {
-                            tokio::time::sleep(Duration::from_secs(
-                                1 << (self.max_retries - retries_left).min(6),
-                            ))
-                            .await;
-
-                            retries_left -= 1;
+                            self.consume_retry(&mut retries_left).await
                         }
                         404 => {
                             return Err(trc::StoreEvent::S3Error
@@ -182,15 +183,7 @@ impl S3Store {
                         }
                     }
                 }
-                500..=599 if retries_left > 0 => {
-                    // wait backoff
-                    tokio::time::sleep(Duration::from_secs(
-                        1 << (self.max_retries - retries_left).min(6),
-                    ))
-                    .await;
-
-                    retries_left -= 1;
-                }
+                500..=599 if retries_left > 0 => self.consume_retry(&mut retries_left).await,
                 code => {
                     return Err(trc::StoreEvent::S3Error
                         .reason(String::from_utf8_lossy(response.as_slice()))
@@ -204,24 +197,18 @@ impl S3Store {
         let mut retries_left = self.max_retries;
 
         loop {
-            let response = self
-                .bucket
-                .delete_object(self.build_key(key))
-                .await
-                .map_err(into_error)?;
+            let response = match self.bucket.delete_object(self.build_key(key)).await {
+                Ok(response) => response,
+                Err(err) => {
+                    self.retry_or_fail(err, &mut retries_left).await?;
+                    continue;
+                }
+            };
 
             match response.status_code() {
                 200..=299 => return Ok(true),
                 404 => return Ok(false),
-                500..=599 if retries_left > 0 => {
-                    // wait backoff
-                    tokio::time::sleep(Duration::from_secs(
-                        1 << (self.max_retries - retries_left).min(6),
-                    ))
-                    .await;
-
-                    retries_left -= 1;
-                }
+                500..=599 if retries_left > 0 => self.consume_retry(&mut retries_left).await,
                 code => {
                     return Err(trc::StoreEvent::S3Error
                         .reason(String::from_utf8_lossy(response.as_slice()))
@@ -241,6 +228,39 @@ impl S3Store {
         } else {
             Base32Writer::from_bytes(key).finalize()
         }
+    }
+
+    /// Waits out the exponential backoff (1s, 2s, 4s, ..., capped at 64s) and
+    /// spends one attempt from the retry budget.
+    async fn consume_retry(&self, retries_left: &mut u32) {
+        debug_assert!(*retries_left > 0, "consume_retry with no budget left");
+
+        tokio::time::sleep(Duration::from_secs(
+            1 << (self.max_retries - *retries_left).min(6),
+        ))
+        .await;
+
+        *retries_left -= 1;
+    }
+
+    /// Spends a retry on a request that failed with a transport-class error,
+    /// such as a connect timeout or a reset mid-upload, so those share the
+    /// budget and backoff that 5xx responses get. Every request retried here is
+    /// idempotent, so repeating one is no less safe than repeating it after a
+    /// 5xx.
+    async fn retry_or_fail(&self, err: S3Error, retries_left: &mut u32) -> trc::Result<()> {
+        // Only a transport-class failure is worth repeating. A signing, URL or
+        // encoding fault is deterministic, so retrying one spends the whole
+        // budget asleep before surfacing the identical error.
+        if *retries_left == 0
+            || !matches!(err, S3Error::Reqwest(_) | S3Error::Io(_) | S3Error::Http(_))
+        {
+            return Err(into_error(err));
+        }
+
+        self.consume_retry(retries_left).await;
+
+        Ok(())
     }
 }
 
