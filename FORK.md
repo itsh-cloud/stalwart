@@ -1,13 +1,14 @@
 # ITSH fork of Stalwart
 
 This fork tracks upstream [stalwartlabs/stalwart](https://github.com/stalwartlabs/stalwart)
-and carries one behavioural patch plus a build change. Everything else is upstream.
+and carries two behavioural patches plus a build change. Everything else is
+upstream.
 
 Base: **v0.16.19**. Branch: **`itsh/v0.16.19`**.
 
 Previous base: v0.15.5 on `itsh/v0.15.5`, kept for the rollback image.
 
-## The patch
+## The header search patch
 
 `crates/store/src/search/query.rs` makes an IMAP/JMAP header search **intersect**
 the query's tokens instead of unioning them.
@@ -85,6 +86,60 @@ each resolves to exactly one message.
 `SEARCH HEADER Message-ID aaa` still matches both `<alpha@aaa.example>` and
 `<beta@aaa.example>`, which is correct: both headers do contain that token.
 
+## The S3 retry patch
+
+`crates/store/src/backend/s3/mod.rs` gives transport failures the same retry
+budget that HTTP 5xx responses already had.
+
+Upstream retries a 5xx status up to `maxRetries` times with exponential backoff,
+but a transport failure (connect timeout, total-request timeout, a reset
+mid-upload) leaves through `.map_err(into_error)?` on the first attempt, so the
+budget only ever applied to requests that reached a server-side decision. A blob
+write sits on the SMTP DATA path, so one timed-out PUT refuses the message with
+`451 4.3.5` and it is never queued: the sending client keeps it and nothing
+retries server-side.
+
+All four call sites are covered, `get_blob`, `put_blob`, the `verifyAfterWrite`
+HEAD and `delete_blob`, via two helpers: `consume_retry` for the shared backoff
+and `retry_or_fail` for the budget decision.
+
+### Scope and cost
+
+Only transport-class errors are retried, matched positively as
+`S3Error::Reqwest | S3Error::Io | S3Error::Http`. A deterministic fault such as a
+signing, URL or encoding error surfaces immediately rather than spending the
+budget asleep before returning the identical error. `S3Error` is
+`#[non_exhaustive]`, so a positive list is the safe shape: a transport variant
+added upstream falls back to today's fail-fast behaviour instead of silently
+retrying something deterministic.
+
+Every retried operation is idempotent. Object keys are content-derived, so a
+repeated PUT writes identical bytes.
+
+`rust-s3` runs its own retry underneath this one. `RETRIES` defaults to 1 and
+Stalwart never calls `set_retries`, so each request already makes up to two HTTP
+attempts with a 1s sleep between them. Worst-case wall time is therefore driven
+by the configured request `timeout` and multiplies with it, not by the backoff,
+which totals 7s at `maxRetries: 3`.
+
+### Residual behaviour
+
+A transport failure that is retried and then succeeds emits no event, so
+`store_s3_error` counts terminal failures only. That is the useful definition for
+alerting, at the cost of no signal for transient trouble that was absorbed. The
+histograms that would show it as latency, `STORE_BLOB_WRITE_TIME` and
+`STORE_BLOB_READ_TIME`, sit in the enterprise-only set in
+`crates/trc/src/ipc/metrics.rs` and are unavailable on this build. Adding a
+counter would mean editing `crates/trc/src/event/enums.rs` and `enums_impl.rs`,
+both marked auto-generated, and bumping `TOTAL_EVENT_COUNT`, which sizes fixed
+arrays and bitsets. That is why the blind spot is recorded here rather than
+closed.
+
+Nothing cancels the retry loop when a client disconnects: `handle_conn` wraps
+only the socket read in a timeout, not `ingest`. A client that gives up mid-write
+leaves the server to finish and queue the message anyway, so a resend can deliver
+twice. Keeping the request `timeout` low bounds this.
+
 ## Licensing and the build
 
 The tree is dual licensed. Most files are `AGPL-3.0-only OR LicenseRef-SEL`, and
@@ -143,12 +198,17 @@ harmless because this image repository only ever holds builds from this fork.
 ```sh
 git fetch upstream --tags
 git switch -c itsh/vX.Y.Z vX.Y.Z
-git cherry-pick <patch commit from the previous itsh branch>
+git cherry-pick <both patch commits from the previous itsh branch>
 ```
 
 The patched hunk in `crates/store/src/search/query.rs` was byte-identical
 between v0.15.5 and v0.16.19 (blob `171ca4a6`), so the cherry-pick applied
 cleanly. Re-run the acceptance check above afterwards, then tag `vX.Y.Z-itsh.1`.
+
+The S3 retry patch touches `crates/store/src/backend/s3/mod.rs` only. Check after
+rebasing that upstream has not adopted its own transport retry, in which case the
+patch should be dropped rather than merged, and that `S3Error` has gained no new
+transport-class variant the positive match in `retry_or_fail` would miss.
 
 The patch is **more** necessary at 0.16 than at 0.15. v0.16.19 removed the
 `ContentType`/`Received` gate in `crates/email/src/message/index/search.rs`, so
