@@ -11,7 +11,7 @@ use crate::auth::oauth::{
 use common::{
     KV_OAUTH, Server,
     auth::{
-        AuthRequest,
+        AccessToken, AuthRequest,
         authentication::UsernameParts,
         oauth::{
             CLIENT_ID_MAX_LEN, DEVICE_CODE_LEN, SUPPORTED_SCOPES, USER_CODE_ALPHABET,
@@ -283,8 +283,9 @@ impl OAuthApiHandler for Server {
                 };
 
                 // Authenticate
-                match self
-                    .authenticate(&AuthRequest {
+                match authenticate_primary(
+                    self,
+                    &AuthRequest {
                         credentials: Credentials::Basic {
                             username: account_name,
                             secret: account_secret,
@@ -292,8 +293,9 @@ impl OAuthApiHandler for Server {
                         },
                         session_id: session.session_id,
                         remote_ip: session.remote_ip,
-                    })
-                    .await
+                    },
+                )
+                .await
                 {
                     Ok(access_token) => {
                         // Registry-backed clients are validated once the account is known
@@ -387,8 +389,9 @@ impl OAuthApiHandler for Server {
                         .caused_by(trc::location!())?;
                     if oauth.status == OAuthStatus::Pending {
                         // Authenticate
-                        match self
-                            .authenticate(&AuthRequest {
+                        match authenticate_primary(
+                            self,
+                            &AuthRequest {
                                 credentials: Credentials::Basic {
                                     username: account_name,
                                     secret: account_secret,
@@ -396,8 +399,9 @@ impl OAuthApiHandler for Server {
                                 },
                                 session_id: session.session_id,
                                 remote_ip: session.remote_ip,
-                            })
-                            .await
+                            },
+                        )
+                        .await
                         {
                             Ok(access_token) => {
                                 let new_oauth_code = OAuthCode {
@@ -595,6 +599,28 @@ impl OAuthApiHandler for Server {
         .into_http_response()
         .with_cors_unrestricted())
     }
+}
+
+// Issued tokens carry the account's full permissions, not a credential scope, so
+// an app password or API key must not be able to authorize a client.
+async fn authenticate_primary(server: &Server, req: &AuthRequest) -> trc::Result<AccessToken> {
+    let access_token = server.authenticate(req).await?;
+    if !access_token.is_secondary_credential() {
+        return Ok(access_token);
+    }
+
+    // Matches the delay on a failed login so the refusal does not confirm the secret
+    #[cfg(not(feature = "test_mode"))]
+    {
+        let delay = rng().random_range(50..500);
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+
+    Err(trc::AuthEvent::Error
+        .into_err()
+        .account_id(access_token.account_id())
+        .details("App passwords and API keys cannot authorize OAuth clients.")
+        .caused_by(trc::location!()))
 }
 
 fn grant_scope(requested: Option<&str>, registered_mask: u64) -> Option<String> {
