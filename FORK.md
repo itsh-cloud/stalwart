@@ -1,7 +1,7 @@
 # ITSH fork of Stalwart
 
 This fork tracks upstream [stalwartlabs/stalwart](https://github.com/stalwartlabs/stalwart)
-and carries two behavioural patches plus a build change. Everything else is
+and carries three behavioural patches plus a build change. Everything else is
 upstream.
 
 Base: **v0.16.19**. Branch: **`itsh/v0.16.19`**.
@@ -140,6 +140,57 @@ only the socket read in a timeout, not `ingest`. A client that gives up mid-writ
 leaves the server to finish and queue the message anyway, so a resend can deliver
 twice. Keeping the request `timeout` low bounds this.
 
+## The OAuth scoped-credential patch
+
+`crates/http/src/auth/oauth/auth.rs` refuses to authorize an OAuth client when
+the login used an app password or an API key.
+
+Both login types on `POST /api/auth`, the authorization-code login and the
+device-code approval, authenticate with `Credentials::Basic`, which accepts app
+passwords. The authorization they record holds only the account id, and the
+access and refresh tokens later issued from it carry no credential reference. A
+token obtained this way therefore has the account's full permissions, whatever
+`Disable` or `Replace` permissions the credential was created with, and revoking
+the credential does not end it.
+
+Both arms now authenticate through `authenticate_primary`, which rejects an
+access token that is not on the account's primary scope
+(`AccessToken::is_secondary_credential` in `crates/common/src/auth/access_token.rs`).
+The client receives `LoginResponse::Failure`, the same response as a wrong
+password, after the same random delay.
+
+### Scope and cost
+
+- Only the two `/api/auth` arms change. Authorization codes and device approvals
+  are created nowhere else, and `/auth/token` only redeems them or refreshes an
+  existing token.
+- Primary-password logins, including MFA and master-user impersonation, are
+  unaffected, as are app passwords and API keys on IMAP, POP3, SMTP,
+  ManageSieve, JMAP, DAV and the management API.
+- API keys cannot reach this path through the `Basic` branch of
+  `authenticate`, which does not parse them. The check covers them regardless.
+- The refusal is applied after `authenticate` returns, so it does not count
+  towards the authentication ban rate, and it is logged as `auth.error` rather
+  than `auth.failed`.
+- `is_secondary_credential` is `scope_idx > 0`, the test `assert_is_valid`
+  already uses to tell a secondary credential from the primary one.
+
+### Residual behaviour
+
+Tokens issued before the patch stay valid until the account's primary password
+changes or the OAuth token key is rotated. A refresh token used within the
+renewal window is replaced by a new one, so such a token does not lapse on its
+own while it keeps being refreshed.
+
+### Accepting the change
+
+`tests/src/system/oidc.rs` creates an app password, confirms it authenticates
+over HTTP, and asserts that it is refused for both an authorization code and a
+device-code approval while the account password still succeeds. Run it with
+`STORE=RocksDb cargo test -p tests --lib system::system_tests -- --exact`. A unit
+test in `access_token.rs` pins `is_secondary_credential` for primary, admin,
+renewed and scoped tokens.
+
 ## Licensing and the build
 
 The tree is dual licensed. Most files are `AGPL-3.0-only OR LicenseRef-SEL`, and
@@ -198,7 +249,7 @@ harmless because this image repository only ever holds builds from this fork.
 ```sh
 git fetch upstream --tags
 git switch -c itsh/vX.Y.Z vX.Y.Z
-git cherry-pick <both patch commits from the previous itsh branch>
+git cherry-pick <every patch commit from the previous itsh branch>
 ```
 
 The patched hunk in `crates/store/src/search/query.rs` was byte-identical
@@ -209,6 +260,12 @@ The S3 retry patch touches `crates/store/src/backend/s3/mod.rs` only. Check afte
 rebasing that upstream has not adopted its own transport retry, in which case the
 patch should be dropped rather than merged, and that `S3Error` has gained no new
 transport-class variant the positive match in `retry_or_fail` would miss.
+
+The OAuth scoped-credential patch touches `handle_login_request` in
+`crates/http/src/auth/oauth/auth.rs` and adds one accessor to `AccessToken`.
+After rebasing, check that no new code path stores an authorized OAuth code, and
+drop the patch if upstream starts binding issued tokens to the credential that
+authorized them.
 
 The patch is **more** necessary at 0.16 than at 0.15. v0.16.19 removed the
 `ContentType`/`Received` gate in `crates/email/src/message/index/search.rs`, so
@@ -238,6 +295,9 @@ the `[patch.crates-io]` git pins introduced in this release.
 
 ## Contributing upstream
 
-This patch is not offered upstream. Upstream `CONTRIBUTING.md` requires vouched
-contributor status and a signed licensing agreement, so the fork is maintained
-here instead.
+The header search and S3 retry patches are not offered upstream. Upstream
+`CONTRIBUTING.md` requires vouched contributor status and a signed licensing
+agreement, so the fork is maintained here instead.
+
+The OAuth scoped-credential patch is a security fix. It belongs with upstream's
+security process in `SECURITY.md`, not in a pull request.
