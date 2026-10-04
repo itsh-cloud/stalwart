@@ -606,6 +606,11 @@ impl AccessToken {
     }
 
     #[inline(always)]
+    pub fn is_secondary_credential(&self) -> bool {
+        self.scope_idx > 0
+    }
+
+    #[inline(always)]
     pub fn revision(&self) -> u64 {
         self.inner.revision
     }
@@ -936,5 +941,39 @@ fn hash_credential_permissions(hasher: &mut AHasher, permissions: &structs::Cred
             3u8.hash(hasher);
             permissions.permissions.as_slice().hash(hasher);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secondary_credential_scope() {
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let inner = Arc::new(AccessTokenInner {
+            scopes: Box::new([
+                AccessScope::new(Permissions::all(), u32::MAX),
+                AccessScope::new(Permissions::all(), 7),
+            ]),
+            ..Default::default()
+        });
+
+        assert!(
+            !AccessToken::new(inner.clone(), ip)
+                .unwrap()
+                .is_secondary_credential()
+        );
+        assert!(!AccessToken::new_admin().is_secondary_credential());
+        assert!(
+            !AccessToken::renew(inner.clone(), Some(u32::MAX), ip)
+                .unwrap()
+                .is_secondary_credential()
+        );
+        assert!(
+            AccessToken::new_scoped(inner, 7, ip)
+                .unwrap()
+                .is_secondary_credential()
+        );
     }
 }

@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-SEL
  */
 
+use crate::system::authentication::validate_password;
 use crate::utils::{
     http::HttpRequest,
     imap::{ImapConnection, Type},
+    jmap::JmapUtils,
     pop3::Pop3Connection,
     server::TestServer,
     smtp::SmtpConnection,
@@ -33,7 +35,7 @@ use jmap_client::{
 use registry::schema::{
     enums::JwtSignatureAlgorithm,
     prelude::{ObjectType, Property},
-    structs::{OAuthClient, OidcProvider, SecretText, SecretTextValue},
+    structs::{AppPassword, OAuthClient, OidcProvider, SecretText, SecretTextValue},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::{Duration, Instant};
@@ -342,6 +344,39 @@ pub async fn test(test: &mut TestServer) {
     assert_ne!(
         status, 200,
         "unknown resource indicator must not be authorized"
+    );
+
+    // An app password is a valid login but must not authorize a client
+    let app_password = user
+        .registry_create([AppPassword {
+            description: "OAuth test".to_string(),
+            ..Default::default()
+        }])
+        .await
+        .created(0)
+        .text_field("secret")
+        .to_string();
+    validate_password("user@example.org", &app_password, true).await;
+    assert_eq!(
+        http.post::<LoginResponse>(
+            "/api/auth",
+            &LoginRequest::AuthCode {
+                account_name: "user@example.org".to_string(),
+                account_secret: app_password.clone(),
+                mfa_token: None,
+                client_id: client_id.to_string(),
+                redirect_uri: "com.example.app:/cb".to_string().into(),
+                nonce: None,
+                scope: Some(PROFILE_SCOPE.to_string()),
+                code_challenge: Some(PKCE_CHALLENGE.to_string()),
+                code_challenge_method: Some("S256".to_string()),
+                state: None,
+                resource: vec![],
+            },
+        )
+        .await
+        .unwrap(),
+        LoginResponse::Failure
     );
 
     // Authenticate with the correct password, PKCE (S256), scope and a valid resource indicator
@@ -719,6 +754,32 @@ pub async fn test(test: &mut TestServer) {
         TokenResponse::Error {
             error: ErrorType::AuthorizationPending
         }
+    );
+
+    // An app password must not approve a device code
+    assert_eq!(
+        http.post::<LoginResponse>(
+            "/api/auth",
+            &LoginRequest::AuthDevice {
+                account_name: "user@example.org".to_string(),
+                account_secret: app_password.clone(),
+                mfa_token: None,
+                code: device_response.user_code.clone(),
+            },
+        )
+        .await
+        .unwrap(),
+        LoginResponse::Failure
+    );
+    let response = post::<TokenResponse>(&metadata.token_endpoint, &token_params).await;
+    assert!(
+        matches!(
+            response,
+            TokenResponse::Error {
+                error: ErrorType::AuthorizationPending | ErrorType::ExpiredToken
+            }
+        ),
+        "a refused app password must leave the device code unapproved: {response:?}"
     );
 
     // Let the code expire and make sure it's invalidated
