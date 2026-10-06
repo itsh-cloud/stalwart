@@ -1,12 +1,13 @@
 # ITSH fork of Stalwart
 
 This fork tracks upstream [stalwartlabs/stalwart](https://github.com/stalwartlabs/stalwart)
-and carries three behavioural patches plus a build change. Everything else is
+and carries three behavioural patches plus build changes. Everything else is
 upstream.
 
-Base: **v0.16.19**. Branch: **`itsh/v0.16.19`**.
+Base: **v0.16.25**. Branch: **`itsh/v0.16.25`**.
 
-Previous base: v0.15.5 on `itsh/v0.15.5`, kept for the rollback image.
+Previous bases: v0.16.19 on `itsh/v0.16.19` and v0.15.5 on `itsh/v0.15.5`, kept for
+the rollback images.
 
 ## The header search patch
 
@@ -194,33 +195,48 @@ renewed and scoped tokens.
 ## Licensing and the build
 
 The tree is dual licensed. Most files are `AGPL-3.0-only OR LicenseRef-SEL`, and
-a small set is `LicenseRef-SEL` only. At v0.16.19 there are 19 such files under
-`crates/`, and each sits behind a cargo feature this build does not enable:
+a small set is `LicenseRef-SEL` only. At v0.16.25 there are 52 such files under
+`crates/`. 19 sit behind a cargo feature this build does not enable:
 `enterprise` for all but one, and `dev_mode`/`test_mode` for
-`crates/common/src/telemetry/metrics/test_data.rs`.
+`crates/common/src/telemetry/metrics/test_data.rs`. The other 33 are the `scim`
+and `scim-proto` crates added in 0.16.20, which upstream depends on
+unconditionally. Every use of `scim` is already behind `enterprise`, so this
+fork makes it an optional dependency of `http` and `main` that only
+`enterprise` turns on, and neither crate is compiled here.
+
+Dual-licensed files in the compiled crates also hold 118 SEL-only snippets
+between `SPDX-SnippetBegin` and `SPDX-SnippetEnd`. All but three are already
+excluded from this build: the SCIM provisioning flag and
+`DomainCache::allows_scim_provisioning` in `crates/common/src/auth/mod.rs`, and
+the lines in `crates/common/src/cache/principals.rs` that set it. Every reader
+of the flag is itself behind `enterprise`, so this fork gates those three as
+well, with the attribute above the `SnippetBegin` marker.
 
 `Dockerfile.itsh` therefore builds **without** the `enterprise` feature. The
 published image contains no SEL-licensed code and is AGPL-3.0-only, which is what
 makes it redistributable. `.github/scripts/check_sel_gating.py` runs before every
-image build and fails if upstream ever adds an SEL-licensed file that is
-reachable in this build.
+image build and fails if upstream ever adds an SEL-licensed file or snippet that
+is reachable in this build.
 
-The check resolves each SEL-only file's real parent module chain and accepts a
-gate only when it names at least one feature and none of the features this build
-enables. Gating on a feature we *do* enable excludes nothing: at v0.16.19 the
-three `crates/store/src/backend/composite/*.rs` files carry an inner
+The check asks `cargo tree` which workspace crates this build compiles, fails
+unless the ones left out are exactly `tests`, `scim` and `scim-proto`, and skips
+their files. It then resolves each SEL-only file's real parent module chain and
+accepts a gate only when its `cfg` is false for the feature set in
+`Dockerfile.itsh`. A snippet needs such a gate on every item or statement at its
+own indentation. Gating on a feature we *do* enable excludes nothing: the three
+`crates/store/src/backend/composite/*.rs` files carry an inner
 `#[cfg(any(feature = "postgres", feature = "mysql"))]`, and both are enabled
 here, so they are safe solely because their parent `composite` module is gated.
-The check is negative-tested against a planted ungated file, a correctly gated
-one, and one gated on an enabled feature.
+The check is negative-tested against planted ungated files and snippets
+(including a bare block and a method-chain link), a snippet whose second item is
+ungated, gates on an enabled feature, on `not(enterprise)` and on
+`any(enterprise, postgres)`, and a truncated `cargo tree`.
 
-`tests/` is skipped: it is a separate workspace member and not a dependency of
-the `stalwart` package, which is the only one `Dockerfile.itsh` builds.
-
-The feature set is otherwise identical to upstream's image, and the runtime stage
-mirrors upstream's musl/alpine one, so the result is a drop-in replacement for
-`stalwartlabs/stalwart:<version>-alpine`. The gated features are inert without a
-licence key in any case.
+The feature set is otherwise identical to upstream's image. The runtime stage is
+slimmer than upstream's musl one in `Dockerfile.build`: it runs as root, with no
+`setcap`, `CMD`, `WORKDIR`, `HEALTHCHECK` or `curl`, so the deployment supplies
+the arguments, the data directory and the probes. The gated features are inert
+without a licence key in any case.
 
 Upstream's `Dockerfile` and `Dockerfile.build` are left untouched so they do not
 conflict on rebase. `Dockerfile.itsh` drops the sccache and FoundationDB
@@ -252,8 +268,14 @@ git switch -c itsh/vX.Y.Z vX.Y.Z
 git cherry-pick <every patch commit from the previous itsh branch>
 ```
 
+Two build changes are carried as code: `scim` as an optional dependency in
+`crates/http/Cargo.toml` and `crates/main/Cargo.toml`, and the three
+`enterprise` gates on the SCIM flag snippets. Drop either once upstream gates
+the same code itself. The SEL check fails the image build if a new base needs
+more of the same.
+
 The patched hunk in `crates/store/src/search/query.rs` was byte-identical
-between v0.15.5 and v0.16.19 (blob `171ca4a6`), so the cherry-pick applied
+between v0.15.5 and v0.16.25 (blob `171ca4a6`), so the cherry-pick applied
 cleanly. Re-run the acceptance check above afterwards, then tag `vX.Y.Z-itsh.1`.
 
 The S3 retry patch touches `crates/store/src/backend/s3/mod.rs` only. Check after
@@ -291,7 +313,9 @@ exists so the server binary is the entrypoint directly, and `WORKDIR`/`VOLUME`
 on `/opt/stalwart` are dropped since the data directory is supplied by the
 deployment. `git` plus `CARGO_NET_GIT_FETCH_WITH_CLI`, `CARGO_NET_RETRY` and
 `AWS_LC_SYS_PREBUILT_NASM` are added, matching what upstream's own CI sets for
-the `[patch.crates-io]` git pins introduced in this release.
+the `opentelemetry` git dependencies in `crates/common/Cargo.toml`. The Rust
+image and the cargo-chef and cargo-zigbuild versions follow the pins in
+upstream's `Dockerfile.build`.
 
 ## Contributing upstream
 
