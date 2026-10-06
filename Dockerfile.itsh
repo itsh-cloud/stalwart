@@ -17,7 +17,7 @@ ARG TARGET=x86_64-unknown-linux-musl
 ARG FEATURES="sqlite postgres mysql rocks s3 redis azure nats"
 ARG ZIG_VERSION=0.13.0
 
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:slim-trixie AS base
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.98.1-slim-trixie AS base
 ARG ZIG_VERSION
 ENV DEBIAN_FRONTEND=noninteractive \
     BINSTALL_DISABLE_TELEMETRY=true \
@@ -36,7 +36,7 @@ RUN curl --retry 5 -Ls "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-$(
     ln -s "/usr/local/zig-linux-$(uname -m)-${ZIG_VERSION}/zig" /usr/local/bin/zig
 RUN curl --retry 5 -L --proto '=https' --tlsv1.2 -sSf \
       https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash && \
-    cargo binstall --no-confirm cargo-chef cargo-zigbuild
+    cargo binstall --no-confirm cargo-chef@0.1.78 cargo-zigbuild@0.23.2
 
 FROM base AS planner
 WORKDIR /app
