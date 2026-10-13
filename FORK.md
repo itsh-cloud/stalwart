@@ -4,10 +4,10 @@ This fork tracks upstream [stalwartlabs/stalwart](https://github.com/stalwartlab
 and carries three behavioural patches plus build changes. Everything else is
 upstream.
 
-Base: **v0.16.25**. Branch: **`itsh/v0.16.25`**.
+Base: **v0.16.26**. Branch: **`itsh/v0.16.26`**.
 
-Previous bases: v0.16.19 on `itsh/v0.16.19` and v0.15.5 on `itsh/v0.15.5`, kept for
-the rollback images.
+Previous bases: v0.16.25 on `itsh/v0.16.25`, v0.16.19 on `itsh/v0.16.19` and v0.15.5
+on `itsh/v0.15.5`, kept for the rollback images.
 
 ## The header search patch
 
@@ -195,7 +195,7 @@ renewed and scoped tokens.
 ## Licensing and the build
 
 The tree is dual licensed. Most files are `AGPL-3.0-only OR LicenseRef-SEL`, and
-a small set is `LicenseRef-SEL` only. At v0.16.25 there are 52 such files under
+a small set is `LicenseRef-SEL` only. At v0.16.26 there are 52 such files under
 `crates/`. 19 sit behind a cargo feature this build does not enable:
 `enterprise` for all but one, and `dev_mode`/`test_mode` for
 `crates/common/src/telemetry/metrics/test_data.rs`. The other 33 are the `scim`
@@ -275,7 +275,7 @@ the same code itself. The SEL check fails the image build if a new base needs
 more of the same.
 
 The patched hunk in `crates/store/src/search/query.rs` was byte-identical
-between v0.15.5 and v0.16.25 (blob `171ca4a6`), so the cherry-pick applied
+between v0.15.5 and v0.16.26 (blob `171ca4a6`), so the cherry-pick applied
 cleanly. Re-run the acceptance check above afterwards, then tag `vX.Y.Z-itsh.1`.
 
 The S3 retry patch touches `crates/store/src/backend/s3/mod.rs` only. Check after
@@ -314,8 +314,11 @@ on `/opt/stalwart` are dropped since the data directory is supplied by the
 deployment. `git` plus `CARGO_NET_GIT_FETCH_WITH_CLI`, `CARGO_NET_RETRY` and
 `AWS_LC_SYS_PREBUILT_NASM` are added, matching what upstream's own CI sets for
 the `opentelemetry` git dependencies in `crates/common/Cargo.toml`. The Rust
-image and the cargo-chef and cargo-zigbuild versions follow the pins in
-upstream's `Dockerfile.build`.
+image, Zig, cargo-chef and cargo-zigbuild are the versions upstream's
+`Dockerfile.build` pinned at v0.16.25. At v0.16.26 upstream moved to Zig 0.17.0,
+an unpinned Rust image and a cargo-zigbuild built from an unreleased commit; this
+build stays on the 0.16.25 toolchain until cargo-zigbuild releases Zig 0.17
+support.
 
 ## Contributing upstream
 
