@@ -117,11 +117,13 @@ retrying something deterministic.
 Every retried operation is idempotent. Object keys are content-derived, so a
 repeated PUT writes identical bytes.
 
-`rust-s3` runs its own retry underneath this one. `RETRIES` defaults to 1 and
-Stalwart never calls `set_retries`, so each request already makes up to two HTTP
-attempts with a 1s sleep between them. Worst-case wall time is therefore driven
-by the configured request `timeout` and multiplies with it, not by the backoff,
-which totals 7s at `maxRetries: 3`.
+`rust-s3` (0.38 since v0.16.26) retries underneath this one only for commands it
+treats as replay-safe. `RETRIES` defaults to 1 and Stalwart never calls
+`set_retries`, so `get_blob` and the `verifyAfterWrite` HEAD make up to two HTTP
+attempts per outer attempt with a 1s sleep between them, while `put_blob` and
+`delete_blob` make one: this patch is the only retry on a blob write. Worst-case
+wall time is therefore driven by the configured request `timeout` and multiplies
+with it, not by the backoff, which totals 7s at `maxRetries: 3`.
 
 ### Residual behaviour
 
@@ -317,8 +319,7 @@ the `opentelemetry` git dependencies in `crates/common/Cargo.toml`. The Rust
 image, Zig, cargo-chef and cargo-zigbuild are the versions upstream's
 `Dockerfile.build` pinned at v0.16.25. At v0.16.26 upstream moved to Zig 0.17.0,
 an unpinned Rust image and a cargo-zigbuild built from an unreleased commit; this
-build stays on the 0.16.25 toolchain until cargo-zigbuild releases Zig 0.17
-support.
+build stays on the 0.16.25 toolchain until those are released and pinnable.
 
 ## Contributing upstream
 
