@@ -5,7 +5,8 @@
  */
 
 use crate::{
-    KV_RATE_LIMIT_AUTH, KV_RATE_LIMIT_LOITER, KV_RATE_LIMIT_RCPT, KV_RATE_LIMIT_SCAN, Server,
+    KV_RATE_LIMIT_AUTH, KV_RATE_LIMIT_LOITER, KV_RATE_LIMIT_RCPT, KV_RATE_LIMIT_RCPT_AUTH,
+    KV_RATE_LIMIT_SCAN, Server,
     ipc::{BroadcastEvent, RegistryChange},
     network::ip_to_bytes,
 };
@@ -235,6 +236,19 @@ impl Server {
                     .await
                     .map(|_| true);
             }
+        }
+
+        Ok(false)
+    }
+
+    // A prefix of its own, as KV_RATE_LIMIT_RCPT keys include client-supplied recipients.
+    pub async fn is_rcpt_fail_limited(&self, login: &str, count: bool) -> trc::Result<bool> {
+        if let Some(rate) = &self.core.network.security.rcpt_fail_rate {
+            return self
+                .in_memory_store()
+                .is_rate_allowed(KV_RATE_LIMIT_RCPT_AUTH, login.as_bytes(), rate, !count)
+                .await
+                .map(|limited| limited.is_some());
         }
 
         Ok(false)

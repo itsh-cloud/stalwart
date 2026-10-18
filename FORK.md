@@ -1,7 +1,7 @@
 # ITSH fork of Stalwart
 
 This fork tracks upstream [stalwartlabs/stalwart](https://github.com/stalwartlabs/stalwart)
-and carries three behavioural patches plus build changes. Everything else is
+and carries four behavioural patches plus build changes. Everything else is
 upstream.
 
 Base: **v0.16.26**. Branch: **`itsh/v0.16.26`**.
@@ -194,6 +194,53 @@ device-code approval while the account password still succeeds. Run it with
 test in `access_token.rs` pins `is_secondary_credential` for primary, admin,
 renewed and scoped tokens.
 
+## The authenticated recipient failure patch
+
+`crates/smtp/src/inbound/rcpt.rs` limits failed recipients of an authenticated
+session per login instead of counting them towards the IP ban.
+
+Upstream counts every failed `RCPT TO` against the remote IP under the abuse
+ban rate and blocks the IP once it is exceeded, authenticated or not. When many
+authenticated clients share one egress IP, behind NAT or a cluster's nodes, one
+client sending to non-existent local recipients gets the shared IP banned and
+cuts off every other client behind it.
+
+An authenticated session now counts its failures against its login
+(`Server::is_rcpt_fail_limited` in `crates/common/src/network/security.rs`), at
+the same abuse ban rate. A login over that rate is refused with `451 4.3.0` and
+disconnected, and every later `RCPT TO` from that login is refused the same way
+before any lookup until the rate window ends. No IP is blocked on this path.
+
+The counter has its own key prefix, `KV_RATE_LIMIT_RCPT_AUTH` (28). The
+per-recipient counter's keys are bytes the client supplies, and a quoted local
+part can carry any of them, so a shared prefix would let an unauthenticated
+sender exhaust any login's limit.
+
+### Scope and cost
+
+- Unauthenticated sessions keep the IP and per-recipient ban unchanged.
+- Allowlisted IPs are exempt, as before. That includes loopback, which the
+  internal sessions used by JMAP submission, iMIP and alarms connect from, so
+  they behave exactly as upstream.
+- The per-session `maxFailures` limit applies to both paths unchanged.
+- Resetting the rate limiters (`crates/services/src/task_manager/maintenance.rs`)
+  clears the per-login counters too.
+
+### Residual behaviour
+
+There is no IP-level backstop on this path. An attacker holding K logins behind
+one IP gets K times the rate in failed lookups per window.
+
+Both checks fail open on a rate-store error, as upstream's IP check does.
+
+### Accepting the change
+
+`rcpt_fail_limit` in `tests/src/smtp/inbound/rcpt.rs` covers the unauthenticated
+ban, a forged recipient that spells a login's counter key, the authenticated
+refusal without a ban, the refusal of a reconnecting login, an unaffected second
+login on the same IP, and an allowlisted IP. Run it with
+`STORE=RocksDb cargo test -p tests --lib smtp::inbound::rcpt`.
+
 ## Licensing and the build
 
 The tree is dual licensed. Most files are `AGPL-3.0-only OR LicenseRef-SEL`, and
@@ -280,6 +327,17 @@ The patched hunk in `crates/store/src/search/query.rs` was byte-identical
 between v0.15.5 and v0.16.26 (blob `171ca4a6`), so the cherry-pick applied
 cleanly. Re-run the acceptance check above afterwards, then tag `vX.Y.Z-itsh.1`.
 
+The header search patch is **more** necessary at 0.16 than at 0.15. v0.16.19
+removed the `ContentType`/`Received` gate in
+`crates/email/src/message/index/search.rs`, so every non-address header is now
+raw-tokenised into the `Headers` field and the union bug over-matches across
+more headers than it did at 0.15.5.
+
+It does **not** survive into 1.0: on `upstream/v1.0.0`,
+`crates/store/src/search/query.rs` contains neither `is_json` nor
+`merge_bitmaps`, and the directory gains `codec.rs`/`tokenize.rs` while losing
+`bm_u32.rs`/`bm_u64.rs`. The fix has to be re-derived against that structure.
+
 The S3 retry patch touches `crates/store/src/backend/s3/mod.rs` only. Check after
 rebasing that upstream has not adopted its own transport retry, in which case the
 patch should be dropped rather than merged, and that `S3Error` has gained no new
@@ -291,15 +349,14 @@ After rebasing, check that no new code path stores an authorized OAuth code, and
 drop the patch if upstream starts binding issued tokens to the credential that
 authorized them.
 
-The patch is **more** necessary at 0.16 than at 0.15. v0.16.19 removed the
-`ContentType`/`Received` gate in `crates/email/src/message/index/search.rs`, so
-every non-address header is now raw-tokenised into the `Headers` field and the
-union bug over-matches across more headers than it did at 0.15.5.
-
-It does **not** survive into 1.0: on `upstream/v1.0.0`,
-`crates/store/src/search/query.rs` contains neither `is_json` nor
-`merge_bitmaps`, and the directory gains `codec.rs`/`tokenize.rs` while losing
-`bm_u32.rs`/`bm_u64.rs`. The fix has to be re-derived against that structure.
+The authenticated recipient failure patch touches `handle_rcpt_to` and
+`rcpt_error` in `crates/smtp/src/inbound/rcpt.rs` and adds
+`is_rcpt_fail_limited` next to `is_rcpt_fail2banned`, with its own
+`KV_RATE_LIMIT_RCPT_AUTH` prefix in `crates/common/src/lib.rs`, which
+`crates/services/src/task_manager/maintenance.rs` also clears. After rebasing,
+check that `rcpt_error` is still the only caller of `is_rcpt_fail2banned`, that
+upstream has not taken 28 for another `KV_*` prefix, and that the rate limiter
+reset still lists every `KV_RATE_LIMIT_*` prefix.
 
 Upstream workflows removed on this branch: `ci.yml`, `scorecard.yml`,
 `trivy.yml`, `ci-retry.yml`, `auto-close-issues.yml`, `auto-close-prs.yml` and
@@ -326,6 +383,10 @@ build stays on the 0.16.25 toolchain until those are released and pinnable.
 The header search and S3 retry patches are not offered upstream. Upstream
 `CONTRIBUTING.md` requires vouched contributor status and a signed licensing
 agreement, so the fork is maintained here instead.
+
+The authenticated recipient failure patch changes upstream's abuse policy for
+authenticated sessions rather than fixing a defect, so it is not offered
+upstream as is.
 
 The OAuth scoped-credential patch is a security fix. It belongs with upstream's
 security process in `SECURITY.md`, not in a pull request.
