@@ -218,3 +218,166 @@ async fn rcpt() {
         .rcpt_to("nobody@xn--stra6-oqa.de", "550 5.1.2")
         .await;
 }
+
+#[tokio::test]
+async fn rcpt_fail_limit() {
+    use registry::{
+        schema::{
+            prelude::Property,
+            structs::{AllowedIp, MtaStageAuth, Security},
+        },
+        types::ipmask::IpAddrOrMask,
+    };
+
+    let mut test = TestServerBuilder::new("smtp_rcpt_fail_limit_test")
+        .await
+        .with_http_listener(19058)
+        .await
+        .disable_services()
+        .build()
+        .await;
+
+    let john = ("john@foobar.org", "12345 + extra safety");
+    let jane = ("jane@foobar.org", "abcde + extra safety");
+    let bill = ("bill@foobar.org", "p4ssw0rd + extra safety");
+    let mike = ("mike@foobar.org", "p4ssw0rd + extra safety");
+
+    let admin = test.account("admin");
+    for (name, secret) in [john, jane, bill, mike] {
+        admin
+            .create_user_account(name, secret, name, &[], vec![])
+            .await;
+    }
+
+    admin
+        .registry_create_object(MtaStageAuth {
+            require: Expression {
+                else_: "false".into(),
+                ..Default::default()
+            },
+            sasl_mechanisms: Expression {
+                match_: List::from_iter([ExpressionMatch {
+                    if_: "is_tls".into(),
+                    then: "[plain, login]".into(),
+                }]),
+                else_: "0".into(),
+            },
+            ..Default::default()
+        })
+        .await;
+    admin
+        .registry_create_object(MtaStageRcpt {
+            max_failures: Expression {
+                else_: "100".into(),
+                ..Default::default()
+            },
+            wait_on_fail: Expression {
+                else_: "1ms".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await;
+    admin
+        .registry_update_setting(
+            Security {
+                abuse_ban_rate: Some(Rate {
+                    count: 3,
+                    period: 86_400_000u64.into(),
+                }),
+                ..Default::default()
+            },
+            &[Property::AbuseBanRate],
+        )
+        .await;
+    admin
+        .registry_create_object(AllowedIp {
+            address: IpAddrOrMask::from_ip("10.0.0.20".parse().unwrap()),
+            ..Default::default()
+        })
+        .await;
+    admin.reload_settings().await;
+    test.reload_core();
+
+    // Unauthenticated failures over the abuse ban rate still block the IP
+    let mut session = fail_limit_session(&test, "10.0.0.10", None).await;
+    for n in 0..4 {
+        session
+            .rcpt_to(&format!("unknown{n}@foobar.org"), "550 5.1.2")
+            .await;
+    }
+    assert!(test.server.is_ip_blocked("10.0.0.10".parse().unwrap()));
+
+    // Unauthenticated recipients cannot exhaust a login's limit, whatever bytes
+    // they contain
+    let mut session = fail_limit_session(&test, "10.0.0.12", None).await;
+    for _ in 0..3 {
+        session
+            .ingest(b"RCPT TO:<\"\x00auth\x00mike\"@foobar.org>\r\n")
+            .await
+            .unwrap();
+        session.response().assert_code("550 5.1.2");
+    }
+    let mut session = fail_limit_session(&test, "10.0.0.13", Some(mike)).await;
+    session.rcpt_to("jane@foobar.org", "250").await;
+
+    // Authenticated failures over the rate disconnect the session without
+    // blocking the IP, even though they alone exceed the per-IP rate
+    let mut session = fail_limit_session(&test, "10.0.0.11", Some(john)).await;
+    for n in 0..3 {
+        session
+            .rcpt_to(&format!("missing{n}@foobar.org"), "550 5.1.2")
+            .await;
+    }
+    session
+        .ingest(b"RCPT TO:<missing3@foobar.org>\r\n")
+        .await
+        .unwrap_err();
+    session.response().assert_code("451 4.3.0");
+    assert!(!test.server.is_ip_blocked("10.0.0.11".parse().unwrap()));
+
+    // A new session for the same login is refused at its first RCPT
+    let mut session = fail_limit_session(&test, "10.0.0.11", Some(john)).await;
+    session
+        .ingest(b"RCPT TO:<jane@foobar.org>\r\n")
+        .await
+        .unwrap_err();
+    session.response().assert_code("451 4.3.0");
+
+    // Other logins behind the same IP are unaffected
+    let mut session = fail_limit_session(&test, "10.0.0.11", Some(jane)).await;
+    session.rcpt_to("john@foobar.org", "250").await;
+    session.rcpt_to("missing4@foobar.org", "550 5.1.2").await;
+    assert!(!test.server.is_ip_blocked("10.0.0.11".parse().unwrap()));
+
+    // Allowlisted IPs are never limited and do not count towards the login
+    let mut session = fail_limit_session(&test, "10.0.0.20", Some(bill)).await;
+    for n in 0..5 {
+        session
+            .rcpt_to(&format!("absent{n}@foobar.org"), "550 5.1.2")
+            .await;
+    }
+    let mut session = fail_limit_session(&test, "10.0.0.11", Some(bill)).await;
+    session.rcpt_to("john@foobar.org", "250").await;
+}
+
+async fn fail_limit_session(
+    test: &crate::utils::server::TestServer,
+    remote_ip: &str,
+    login: Option<(&str, &str)>,
+) -> smtp::core::Session<crate::smtp::session::DummyIo> {
+    let mut session = test.new_mta_session();
+    session.data.remote_ip = remote_ip.parse().unwrap();
+    session.data.remote_ip_str = remote_ip.into();
+    session.stream.tls = true;
+    session.eval_session_params().await;
+    session.ehlo("mx.foobar.org").await;
+    let from = if let Some((user, secret)) = login {
+        session.auth_plain(user, secret, "235 2.7.0").await;
+        user
+    } else {
+        "sender@example.net"
+    };
+    session.mail_from(from, "250").await;
+    session
+}

@@ -127,6 +127,7 @@ pub const KV_LOCK_QUEUE_MESSAGE: u8 = 21;
 pub const KV_LOCK_TASK: u8 = 23;
 pub const KV_LOCK_DAV: u8 = 25;
 pub const KV_SIEVE_ID: u8 = 26;
+pub const KV_RATE_LIMIT_RCPT_AUTH: u8 = 28;
 
 #[derive(Clone)]
 pub struct Server {

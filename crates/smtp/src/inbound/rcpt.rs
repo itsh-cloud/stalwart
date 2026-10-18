@@ -56,6 +56,22 @@ impl<T: SessionStream> Session<T> {
             return self.write(b"455 4.5.3 Too many recipients.\r\n").await;
         }
 
+        // Refuse a login over its failure limit before any lookup, so that
+        // reconnecting does not let it keep probing addresses.
+        if let Some(login) = self.rcpt_fail_login() {
+            match self.server.is_rcpt_fail_limited(login, false).await {
+                Ok(true) => return self.reject_rcpt_fail_limited(to.address.into_owned()).await,
+                Ok(false) => {}
+                Err(err) => {
+                    trc::error!(
+                        err.span_id(self.data.session_id)
+                            .caused_by(trc::location!())
+                            .details("Failed to check recipient failure limit.")
+                    );
+                }
+            }
+        }
+
         // Verify parameters
         if ((to.flags
             & (RCPT_NOTIFY_DELAY | RCPT_NOTIFY_NEVER | RCPT_NOTIFY_SUCCESS | RCPT_NOTIFY_FAILURE)
@@ -414,11 +430,18 @@ impl<T: SessionStream> Session<T> {
         self.data.rcpt_errors += 1;
         let has_too_many_errors = self.data.rcpt_errors >= self.params.rcpt_errors_max;
 
-        match self
-            .server
-            .is_rcpt_fail2banned(self.data.remote_ip, &rcpt)
-            .await
-        {
+        let result = if let Some(login) = self.rcpt_fail_login() {
+            match self.server.is_rcpt_fail_limited(login, true).await {
+                Ok(true) => return self.reject_rcpt_fail_limited(rcpt).await,
+                result => result,
+            }
+        } else {
+            self.server
+                .is_rcpt_fail2banned(self.data.remote_ip, &rcpt)
+                .await
+        };
+
+        match result {
             Ok(true) => {
                 trc::event!(
                     Security(SecurityEvent::AbuseBan),
@@ -453,5 +476,25 @@ impl<T: SessionStream> Session<T> {
                 .await?;
             Err(())
         }
+    }
+
+    // Authenticated sessions are limited per login instead of per IP, so that one
+    // client cannot get an egress IP shared with others banned. Allowlisted IPs,
+    // which include the loopback used by internal submissions, are exempt.
+    fn rcpt_fail_login(&self) -> Option<&str> {
+        self.authenticated_as()
+            .filter(|_| !self.server.is_ip_allowed(self.data.remote_ip))
+    }
+
+    async fn reject_rcpt_fail_limited(&mut self, rcpt: String) -> Result<(), ()> {
+        trc::event!(
+            Smtp(SmtpEvent::TooManyInvalidRcpt),
+            SpanId = self.data.session_id,
+            AccountName = self.authenticated_as().unwrap_or_default().to_string(),
+            To = rcpt,
+        );
+        self.write(b"451 4.3.0 Too many errors, disconnecting.\r\n")
+            .await?;
+        Err(())
     }
 }
