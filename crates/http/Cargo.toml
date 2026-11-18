@@ -13,7 +13,7 @@ email = { path = "../email" }
 smtp = { path = "../smtp" }
 jmap = { path = "../jmap" }
 dav = { path = "../dav" }
-scim = { path = "../scim" }
+scim = { path = "../scim", optional = true }
 groupware = { path = "../groupware" }
 http_proto = { path = "../http-proto" }
 jmap_proto = { path = "../jmap-proto" }
@@ -46,7 +46,7 @@ jmap-tools = { path = "../jmap-tools" }
 
 [features]
 dev_mode = []
-enterprise = ["scim/enterprise", "store/enterprise", "common/enterprise", "utils/enterprise", "trc/enterprise", "email/enterprise", "smtp/enterprise", "jmap/enterprise", "dav/enterprise", "groupware/enterprise", "http_proto/enterprise", "jmap_proto/enterprise", "directory/enterprise", "services/enterprise", "registry/enterprise"]
+enterprise = ["dep:scim", "scim/enterprise", "store/enterprise", "common/enterprise", "utils/enterprise", "trc/enterprise", "email/enterprise", "smtp/enterprise", "jmap/enterprise", "dav/enterprise", "groupware/enterprise", "http_proto/enterprise", "jmap_proto/enterprise", "directory/enterprise", "services/enterprise", "registry/enterprise"]
 
 [lints]
 workspace = true

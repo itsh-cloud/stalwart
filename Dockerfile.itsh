@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1
+#
+# ITSH fork image. Mirrors the musl runtime stage of upstream's Dockerfile.build,
+# so it is a drop-in replacement for stalwartlabs/stalwart:<version>-alpine,
+# with two differences:
+#
+#   1. Built WITHOUT the "enterprise" cargo feature. Every file licensed solely
+#      under LicenseRef-SEL is gated behind that feature, so the resulting
+#      binary is AGPL-3.0-only and redistributable. The gated features are inert
+#      without a licence key regardless.
+#   2. No sccache or FoundationDB. Upstream wires sccache to the GitHub Actions
+#      cache and builds an extra FoundationDB binary; neither is used here, and
+#      buildx layer caching covers the rebuild path.
+#
+# The feature set is otherwise identical to upstream's image.
+
+ARG TARGET=x86_64-unknown-linux-musl
+ARG FEATURES="sqlite postgres mysql rocks s3 redis keep azure nats"
+ARG ZIG_VERSION=0.17.0
+ARG ZIG_SHA256_X86_64=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+ARG ZIG_SHA256_AARCH64=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8
+
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.100.0-slim-trixie AS base
+ARG ZIG_VERSION
+ARG ZIG_SHA256_X86_64
+ARG ZIG_SHA256_AARCH64
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_TERM_COLOR=always \
+    CARGO_NET_RETRY=10 \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    LANG=C.UTF-8 \
+    TZ=UTC \
+    AWS_LC_SYS_PREBUILT_NASM=1
+RUN apt-get update && \
+    apt-get install -yq --no-install-recommends ca-certificates curl git jq xz-utils make libclang-19-dev && \
+    rm -rf /var/lib/apt/lists/*
+# zig provides the musl cross-compilation toolchain used by cargo-zigbuild.
+# Every download is checked against a pinned digest; the build tools come from
+# crates.io through cargo, which verifies them against the registry index.
+RUN arch="$(uname -m)" && \
+    case "$arch" in \
+      x86_64) sha="$ZIG_SHA256_X86_64" ;; \
+      aarch64) sha="$ZIG_SHA256_AARCH64" ;; \
+      *) echo "no Zig digest for $arch" >&2; exit 1 ;; \
+    esac && \
+    curl --retry 5 -fsSL --proto '=https' --tlsv1.2 -o /tmp/zig.tar.xz \
+      "https://ziglang.org/download/${ZIG_VERSION}/zig-${arch}-linux-${ZIG_VERSION}.tar.xz" && \
+    echo "${sha}  /tmp/zig.tar.xz" | sha256sum -c - && \
+    tar -J -x -C /usr/local -f /tmp/zig.tar.xz && \
+    rm /tmp/zig.tar.xz && \
+    ln -s "/usr/local/zig-${arch}-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
+RUN cargo install --locked cargo-chef@0.1.78 cargo-zigbuild@0.24.1
+
+FROM base AS planner
+WORKDIR /app
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM base AS builder
+WORKDIR /app
+ARG TARGET
+ARG FEATURES
+RUN rustup set profile minimal && rustup target add ${TARGET}
+# Dependencies first, so a source-only change does not rebuild the world.
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --recipe-path recipe.json --zigbuild --release --target ${TARGET} \
+      -p stalwart --no-default-features --features "${FEATURES}"
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo zigbuild --release --target ${TARGET} -p stalwart --no-default-features --features "${FEATURES}" && \
+    mkdir -p /artifact && \
+    mv target/${TARGET}/release/stalwart /artifact/stalwart
+
+FROM --platform=$TARGETPLATFORM docker.io/library/alpine:3.24.4 AS musl
+RUN apk add --update --no-cache ca-certificates curl tzdata libcap && \
+    rm -rf /var/cache/apk/* && \
+    addgroup -S -g 2000 stalwart && \
+    adduser -S -D -H -u 2000 -G stalwart -s /sbin/nologin stalwart && \
+    mkdir -p /etc/stalwart /var/lib/stalwart && \
+    chown stalwart:stalwart /etc/stalwart /var/lib/stalwart
+COPY --from=builder --chmod=0755 /artifact/stalwart /usr/local/bin/stalwart
+RUN setcap 'cap_net_bind_service=+ep' /usr/local/bin/stalwart
+USER stalwart
+WORKDIR /var/lib/stalwart
+VOLUME ["/etc/stalwart", "/var/lib/stalwart"]
+EXPOSE	443 25 110 587 465 143 993 995 4190 8080
+ENV STALWART_HEALTHCHECK_URL=https://127.0.0.1:443/healthz/live
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsSk "$STALWART_HEALTHCHECK_URL" || curl -fsS http://127.0.0.1:8080/healthz/live || exit 1
+ENTRYPOINT ["/usr/local/bin/stalwart"]
+CMD ["--config", "/etc/stalwart/config.json"]
