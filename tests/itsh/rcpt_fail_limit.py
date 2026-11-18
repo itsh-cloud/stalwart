@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import ipaddress
 import smtplib
-import socket
 import time
 
 import common
@@ -155,5 +154,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    socket.setdefaulttimeout(30)
     main()
