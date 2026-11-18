@@ -379,6 +379,12 @@ image, Zig, cargo-chef and cargo-zigbuild are the versions upstream's
 an unpinned Rust image and a cargo-zigbuild built from an unreleased commit; this
 build stays on the 0.16.25 toolchain until those are released and pinnable.
 
+The `opentelemetry` git dependencies point at `itsh-cloud/opentelemetry-rust`,
+branch `stalwart-0.16`, at the revision upstream's 0.16 lockfile pins
+(`ae66e97b`). Upstream's own `stalwartlabs/opentelemetry-rust` is no longer
+public, so no 0.16 release builds from source against it. Upstream dropped it
+after v1.0.0.
+
 ## Contributing upstream
 
 The header search and S3 retry patches are not offered upstream. Upstream
