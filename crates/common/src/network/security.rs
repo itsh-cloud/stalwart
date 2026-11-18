@@ -5,7 +5,8 @@
  */
 
 use crate::{
-    KV_RATE_LIMIT_AUTH, KV_RATE_LIMIT_LOITER, KV_RATE_LIMIT_RCPT, KV_RATE_LIMIT_SCAN, Server,
+    KV_RATE_LIMIT_AUTH, KV_RATE_LIMIT_LOITER, KV_RATE_LIMIT_RCPT, KV_RATE_LIMIT_RCPT_AUTH,
+    KV_RATE_LIMIT_SCAN, Server,
     ipc::{BroadcastEvent, RegistryChange},
     network::ip_to_bytes,
 };
@@ -20,7 +21,8 @@ use registry::{
 };
 use std::{fmt::Debug, hash::Hash, net::IpAddr};
 use store::{
-    blake3,
+    InMemoryStore, blake3,
+    dispatch::lookup::{KeyValue, RateWindow},
     registry::{
         bootstrap::Bootstrap,
         write::{RegistryWrite, RegistryWriteResult},
@@ -271,6 +273,15 @@ impl Server {
         }
 
         Ok(false)
+    }
+
+    // Authenticated sessions count failed recipients per login instead, under a
+    // prefix of their own, as KV_RATE_LIMIT_RCPT keys derive from client input.
+    pub async fn is_rcpt_fail_limited(&self, login: &str, count: bool) -> trc::Result<bool> {
+        match &self.core.network.security.rcpt_fail_rate {
+            Some(rate) => is_login_rcpt_limited(self.in_memory_store(), rate, login, count).await,
+            None => Ok(false),
+        }
     }
 
     pub async fn is_scanner_fail2banned(&self, ip: IpAddr) -> trc::Result<bool> {
@@ -616,3 +627,104 @@ impl<T: PartialEq + Eq + Hash> IpWithTtl<T> {
 #[rustfmt::skip]
 #[path = "../../../../../stalwart-tests/unit/common/src/network/security/tests.rs"]
 mod tests;
+
+// Counts one failure when `count` is set, otherwise only reads the counter.
+async fn is_login_rcpt_limited(
+    store: &InMemoryStore,
+    rate: &Rate,
+    login: &str,
+    count: bool,
+) -> trc::Result<bool> {
+    let window = RateWindow::new(rate, now());
+    let key = blake3::hash(login.as_bytes());
+    store
+        .key_incr(
+            KeyValue::new(
+                window.bucket(KV_RATE_LIMIT_RCPT_AUTH, key.as_bytes()),
+                i64::from(count),
+            )
+            .expires(window.expires_in),
+        )
+        .await
+        .map(|failures| failures > rate.count as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use registry::types::duration::Duration;
+    use std::sync::Arc;
+    use store::backend::local::LocalStore;
+
+    const LOGIN: &str = "user@example.org";
+
+    fn setup() -> (InMemoryStore, Rate) {
+        (
+            InMemoryStore::Local(Arc::new(LocalStore::new(LocalStore::DEFAULT_MAX_ENTRIES))),
+            Rate {
+                count: 3,
+                period: Duration(std::time::Duration::from_secs(3600)),
+            },
+        )
+    }
+
+    async fn limited(store: &InMemoryStore, rate: &Rate, login: &str, count: bool) -> bool {
+        is_login_rcpt_limited(store, rate, login, count)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rcpt_failures_limit_the_login_over_the_rate() {
+        let (store, rate) = setup();
+        for _ in 0..rate.count {
+            assert!(!limited(&store, &rate, LOGIN, true).await);
+        }
+        assert!(limited(&store, &rate, LOGIN, true).await);
+        // A reconnecting session sees the limit before counting anything.
+        assert!(limited(&store, &rate, LOGIN, false).await);
+        // Another login behind the same IP is unaffected.
+        assert!(!limited(&store, &rate, "other@example.org", false).await);
+        assert!(!limited(&store, &rate, "other@example.org", true).await);
+    }
+
+    #[tokio::test]
+    async fn rcpt_limit_check_does_not_count() {
+        let (store, rate) = setup();
+        for _ in 0..rate.count * 2 {
+            assert!(!limited(&store, &rate, LOGIN, false).await);
+        }
+        assert!(!limited(&store, &rate, LOGIN, true).await);
+    }
+
+    #[tokio::test]
+    async fn rcpt_login_counter_is_apart_from_client_keys() {
+        // The unauthenticated counters are keyed by recipient, which the client
+        // chooses, so a recipient spelling the login or its key must not count.
+        let (store, rate) = setup();
+        let hashed = blake3::hash(LOGIN.as_bytes());
+        for key in [LOGIN.as_bytes(), hashed.as_bytes().as_slice()] {
+            for _ in 0..rate.count * 2 {
+                store
+                    .is_rate_allowed(KV_RATE_LIMIT_RCPT, key, &rate)
+                    .await
+                    .unwrap();
+            }
+        }
+        assert!(!limited(&store, &rate, LOGIN, false).await);
+    }
+
+    #[tokio::test]
+    async fn rcpt_login_counters_clear_with_their_prefix() {
+        let (store, rate) = setup();
+        for _ in 0..=rate.count {
+            limited(&store, &rate, LOGIN, true).await;
+        }
+        assert!(limited(&store, &rate, LOGIN, false).await);
+        store
+            .key_delete_prefix(&[KV_RATE_LIMIT_RCPT_AUTH])
+            .await
+            .unwrap();
+        assert!(!limited(&store, &rate, LOGIN, false).await);
+    }
+}

@@ -18,8 +18,8 @@ use common::{
     KV_ACME, KV_GREYLIST, KV_LOCK_DAV, KV_LOCK_QUEUE_MESSAGE, KV_LOCK_TASK, KV_OAUTH,
     KV_OAUTH_CIMD, KV_QUOTA_BLOB, KV_RATE_LIMIT_AUTH, KV_RATE_LIMIT_CIMD, KV_RATE_LIMIT_CONTACT,
     KV_RATE_LIMIT_HTTP_ANONYMOUS, KV_RATE_LIMIT_HTTP_AUTHENTICATED, KV_RATE_LIMIT_IMAP,
-    KV_RATE_LIMIT_LOITER, KV_RATE_LIMIT_RCPT, KV_RATE_LIMIT_SCAN, KV_RATE_LIMIT_SMTP, Server,
-    storage::index::ObjectIndexBuilder,
+    KV_RATE_LIMIT_LOITER, KV_RATE_LIMIT_RCPT, KV_RATE_LIMIT_RCPT_AUTH, KV_RATE_LIMIT_SCAN,
+    KV_RATE_LIMIT_SMTP, Server, storage::index::ObjectIndexBuilder,
 };
 use email::{
     cache::MessageCacheFetch,
@@ -385,6 +385,7 @@ async fn store_maintenance(server: &Server, task: &TaskStoreMaintenance) -> trc:
                 TaskStoreMaintenanceType::RemoveLockDav => &[KV_LOCK_DAV][..],
                 TaskStoreMaintenanceType::ResetRateLimiters => &[
                     KV_RATE_LIMIT_RCPT,
+                    KV_RATE_LIMIT_RCPT_AUTH,
                     KV_RATE_LIMIT_SCAN,
                     KV_RATE_LIMIT_LOITER,
                     KV_RATE_LIMIT_AUTH,
