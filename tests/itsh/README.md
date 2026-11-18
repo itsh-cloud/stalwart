@@ -7,6 +7,7 @@ library only. Each prints one line per check and exits non-zero if any fails.
 
 | Script | Checks |
 |--------|--------|
+| `oauth_scoped_credentials.py` | an app password cannot authorize an OAuth client |
 | `rcpt_fail_limit.py` | failed recipients of a login are limited per login, not per IP |
 
 `rcpt_fail_limit.py` changes the server's abuse ban rate and recipient stage
