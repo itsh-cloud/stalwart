@@ -16,11 +16,14 @@
 ARG TARGET=x86_64-unknown-linux-musl
 ARG FEATURES="sqlite postgres mysql rocks s3 redis azure nats"
 ARG ZIG_VERSION=0.13.0
+ARG ZIG_SHA256_X86_64=d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
+ARG ZIG_SHA256_AARCH64=041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556
 
 FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.98.1-slim-trixie AS base
 ARG ZIG_VERSION
+ARG ZIG_SHA256_X86_64
+ARG ZIG_SHA256_AARCH64
 ENV DEBIAN_FRONTEND=noninteractive \
-    BINSTALL_DISABLE_TELEMETRY=true \
     CARGO_TERM_COLOR=always \
     LANG=C.UTF-8 \
     TZ=UTC \
@@ -31,12 +34,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && \
     apt-get install -yq --no-install-recommends curl jq git xz-utils make libclang-19-dev ca-certificates && \
     rm -rf /var/lib/apt/lists/*
-RUN curl --retry 5 -Ls "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-$(uname -m)-${ZIG_VERSION}.tar.xz" \
-      | tar -J -x -C /usr/local && \
-    ln -s "/usr/local/zig-linux-$(uname -m)-${ZIG_VERSION}/zig" /usr/local/bin/zig
-RUN curl --retry 5 -L --proto '=https' --tlsv1.2 -sSf \
-      https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash && \
-    cargo binstall --no-confirm cargo-chef@0.1.78 cargo-zigbuild@0.23.2
+# The Zig tarball is checked against the digest ziglang.org publishes; the build
+# tools come from crates.io through cargo, which verifies them against the index.
+RUN arch="$(uname -m)" && \
+    case "$arch" in \
+      x86_64) sha="$ZIG_SHA256_X86_64" ;; \
+      aarch64) sha="$ZIG_SHA256_AARCH64" ;; \
+      *) echo "no Zig digest for $arch" >&2; exit 1 ;; \
+    esac && \
+    curl --retry 5 -fsSL --proto '=https' --tlsv1.2 -o /tmp/zig.tar.xz \
+      "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${arch}-${ZIG_VERSION}.tar.xz" && \
+    echo "${sha}  /tmp/zig.tar.xz" | sha256sum -c - && \
+    tar -J -x -C /usr/local -f /tmp/zig.tar.xz && \
+    rm /tmp/zig.tar.xz && \
+    ln -s "/usr/local/zig-linux-${arch}-${ZIG_VERSION}/zig" /usr/local/bin/zig
+RUN cargo install --locked cargo-chef@0.1.78 cargo-zigbuild@0.23.2
 
 FROM base AS planner
 WORKDIR /app
