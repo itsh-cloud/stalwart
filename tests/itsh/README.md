@@ -1,6 +1,6 @@
 # Acceptance scripts
 
-Upstream keeps its test suites in a private repository since 1.0.0, so this
+Upstream removed its test suites from this repository in 1.0.0, so this
 fork checks its patches, and the upstream fixes that replaced earlier patches,
 with these scripts against a running server. They use the Python standard
 library only. Each prints one line per check and exits non-zero if any fails.

@@ -76,8 +76,7 @@ over the rate gets the shared IP banned.
 
 ## Patches upstream absorbed
 
-These were carried on 0.16 and are not on this branch. Each scripted check runs
-against stock upstream and passes there.
+These were carried on 0.16 and are not on this branch.
 
 **Header search.** On 0.16 a `HEADER` search unioned the value's tokens, so
 Message-IDs sharing a domain all matched each other, and draft clients that
@@ -127,12 +126,7 @@ files. It then resolves each SEL-only file's real parent module chain and
 accepts a gate only when its `cfg` is false for the feature set in
 `Dockerfile.itsh`. A snippet needs such a gate on every item or statement at its
 own indentation, either above it or leading its line, and a gate may span
-lines. Gating on a feature we *do* enable excludes nothing. The check is
-negative-tested against planted ungated files and snippets (including a bare
-block, a method-chain link, an inline-gated parameter followed by an ungated
-one and an ungated match arm), a snippet whose second item is ungated, gates on
-an enabled feature, on `not(enterprise)` and on `any(enterprise, postgres)`,
-written on one line and across lines, and a truncated `cargo tree`.
+lines. Gating on a feature we *do* enable excludes nothing.
 
 The feature set is otherwise identical to upstream's image:
 `sqlite postgres mysql rocks s3 redis keep azure nats`. The runtime stage
@@ -162,8 +156,8 @@ taken under AGPL-3.0-only.
 
 ## Acceptance scripts
 
-Upstream keeps its test suites in a private repository since 1.0.0, and the
-`tests` crate the 0.16 patches were tested in is gone. `tests/itsh/` holds
+Upstream removed its test suites from this repository in 1.0.0, including the
+`tests` crate the 0.16 patches were tested in. `tests/itsh/` holds
 scripts that check the patch and the absorbed fixes against a running server;
 its `README.md` shows how to run them.
 

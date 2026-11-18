@@ -35,8 +35,8 @@ RUN apt-get update && \
     apt-get install -yq --no-install-recommends ca-certificates curl git jq xz-utils make libclang-19-dev && \
     rm -rf /var/lib/apt/lists/*
 # zig provides the musl cross-compilation toolchain used by cargo-zigbuild.
-# Every download is checked against a pinned digest; the build tools come from
-# crates.io through cargo, which verifies them against the registry index.
+# The Zig tarball is checked against the digest ziglang.org publishes; the build
+# tools come from crates.io through cargo, which verifies them against the index.
 RUN arch="$(uname -m)" && \
     case "$arch" in \
       x86_64) sha="$ZIG_SHA256_X86_64" ;; \
