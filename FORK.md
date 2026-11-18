@@ -4,10 +4,11 @@ This fork tracks upstream [stalwartlabs/stalwart](https://github.com/stalwartlab
 and carries four behavioural patches plus build changes. Everything else is
 upstream.
 
-Base: **v0.16.26**. Branch: **`itsh/v0.16.26`**.
+Base: **v0.16.27**. Branch: **`itsh/v0.16.27`**. This is the last 0.16 release and the
+source version `stalwart-migrate` requires for the move to 1.x.
 
-Previous bases: v0.16.25 on `itsh/v0.16.25`, v0.16.19 on `itsh/v0.16.19` and v0.15.5
-on `itsh/v0.15.5`, kept for the rollback images.
+Previous bases: v0.16.26 on `itsh/v0.16.26`, v0.16.25 on `itsh/v0.16.25`, v0.16.19 on
+`itsh/v0.16.19` and v0.15.5 on `itsh/v0.15.5`, kept for the rollback images.
 
 ## The header search patch
 
@@ -244,7 +245,7 @@ login on the same IP, and an allowlisted IP. Run it with
 ## Licensing and the build
 
 The tree is dual licensed. Most files are `AGPL-3.0-only OR LicenseRef-SEL`, and
-a small set is `LicenseRef-SEL` only. At v0.16.26 there are 52 such files under
+a small set is `LicenseRef-SEL` only. At v0.16.27 there are 52 such files under
 `crates/`. 19 sit behind a cargo feature this build does not enable:
 `enterprise` for all but one, and `dev_mode`/`test_mode` for
 `crates/common/src/telemetry/metrics/test_data.rs`. The other 33 are the `scim`
@@ -324,7 +325,7 @@ the same code itself. The SEL check fails the image build if a new base needs
 more of the same.
 
 The patched hunk in `crates/store/src/search/query.rs` was byte-identical
-between v0.15.5 and v0.16.26 (blob `171ca4a6`), so the cherry-pick applied
+between v0.15.5 and v0.16.27 (blob `171ca4a6`), so the cherry-pick applied
 cleanly. Re-run the acceptance check above afterwards, then tag `vX.Y.Z-itsh.1`.
 
 The header search patch is **more** necessary at 0.16 than at 0.15. v0.16.19
