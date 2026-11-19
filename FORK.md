@@ -73,6 +73,11 @@ through the mailbox. In return a login can probe more addresses per day than
 the abuse ban rate allows an IP: with the default one-day period, 24 windows of
 the same count.
 
+A JMAP submission made as a group account, which any member may do, counts
+against the group, not the member. So any member can hold the group's JMAP
+sending for up to an hour, and each group gives a member one more budget to
+probe with.
+
 Both checks fail open on a rate-store error, as upstream's IP check does.
 
 ### Accepting the change
