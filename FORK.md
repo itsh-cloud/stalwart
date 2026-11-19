@@ -395,9 +395,13 @@ image, Zig, cargo-chef and cargo-zigbuild are the versions upstream's
 an unpinned Rust image and a cargo-zigbuild built from an unreleased commit; this
 build stays on the 0.16.25 toolchain until those are released and pinnable.
 Both base images are pinned by digest as well as tag (the runtime stage on
-Alpine 3.24.4, which the `0.16.27-itsh.2` image was built on), the dependency
-build and the server build run with `--locked`, and the workflows pin every
-action to a commit SHA.
+Alpine 3.24.4, which the `0.16.27-itsh.2` image was built on), the server build
+runs with `--locked`, and the workflows pin every action to a commit SHA. The
+dependency build (`cargo chef cook`) cannot: cargo-chef masks local crate
+versions to 0.0.1 but leaves the lock's `http 0.16.27` reference to the local
+`http` crate, so `--locked` always refuses it. Unlocked, cook resolves the
+same third-party graph as the lock and only repairs that entry; the server
+build is locked.
 
 The `opentelemetry` git dependencies point at `itsh-cloud/opentelemetry-rust`,
 branch `stalwart-0.16`, at the revision upstream's 0.16 lockfile pins
