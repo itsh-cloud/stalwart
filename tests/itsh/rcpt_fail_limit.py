@@ -25,11 +25,14 @@ that only the rate decides. It then checks, in order:
    count once the IP is no longer allowlisted.
 6. The limit follows the account across the names it signs in with: its
    address in another case and its alias.
+7. Failed recipients of a JMAP submission count against the same login, which
+   is then refused over JMAP and SMTP alike.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import json
 import smtplib
 import time
 
@@ -97,6 +100,55 @@ def rcpt_codes(recipients: list[str], login: tuple[str, str] | None) -> list[int
     return codes
 
 
+def jmap_submit(login: tuple[str, str], recipients: list[str]) -> list[str]:
+    """Submit one message over JMAP and return the SMTP reply for each recipient."""
+    auth = ":".join(login)
+    using = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail",
+             "urn:ietf:params:jmap:submission"]
+
+    def call(*calls: list) -> list:
+        status, body = common.post_json("/jmap", {"using": using, "methodCalls": list(calls)},
+                                        auth=auth)
+        if status != 200 or not isinstance(body, dict):
+            raise SystemExit(f"JMAP: HTTP {status}: {body}")
+        return body["methodResponses"]
+
+    _, session = common.http("GET", "/jmap/session", auth=auth)
+    account = json.loads(session)["primaryAccounts"]["urn:ietf:params:jmap:mail"]
+    identities, mailboxes = call(["Identity/get", {"accountId": account}, "i"],
+                                 ["Mailbox/get", {"accountId": account}, "m"])
+    identity = next((i["id"] for i in identities[1]["list"] if i["email"] == login[0]), None)
+    if identity is None:
+        created = call(["Identity/set", {"accountId": account, "create": {
+            "n": {"name": "Acceptance", "email": login[0]}}}, "i"])
+        identity = created[0][1]["created"]["n"]["id"]
+    mailbox = next(m["id"] for m in mailboxes[1]["list"] if m.get("role") == "drafts")
+    responses = call(
+        ["Email/set", {"accountId": account, "create": {"e": {
+            "mailboxIds": {mailbox: True},
+            "from": [{"email": login[0]}],
+            "to": [{"email": rcpt} for rcpt in recipients],
+            "subject": "acceptance",
+            "bodyValues": {"b": {"value": "acceptance"}},
+            "textBody": [{"partId": "b", "type": "text/plain"}],
+        }}}, "0"],
+        ["EmailSubmission/set", {"accountId": account, "create": {"s": {
+            "emailId": "#e",
+            "identityId": identity,
+            "envelope": {"mailFrom": {"email": login[0]},
+                         "rcptTo": [{"email": rcpt} for rcpt in recipients]},
+        }}}, "1"],
+        ["EmailSubmission/get", {"accountId": account, "#ids": {
+            "resultOf": "1", "name": "EmailSubmission/set", "path": "/created/*/id"},
+            "properties": ["deliveryStatus"]}, "2"],
+    )
+    found = responses[2][1]["list"]
+    if not found:
+        raise SystemExit(f"JMAP submission not created: {responses[1][1]}")
+    status = found[0]["deliveryStatus"] or {}
+    return [status.get(rcpt, {}).get("smtpReply", "") for rcpt in recipients]
+
+
 def missing(n: int) -> list[str]:
     stamp = time.monotonic_ns()
     return [f"missing-{stamp}-{i}@{DOMAIN}" for i in range(n)]
@@ -162,6 +214,15 @@ def main() -> None:
     check(codes == [451], f"same account signed in by its alias: {codes}, want [451]")
     codes = rcpt_codes([first], (fourth, fourth_pw))
     check(codes == [451], f"same account signed in by its address: {codes}, want [451]")
+
+    # 7. A user's JMAP submissions count against the same login.
+    fifth, fifth_pw = common.new_account(DOMAIN, "rcpt-e")
+    jmap_submit((fifth, fifth_pw), missing(RATE + 1))
+    replies = jmap_submit((fifth, fifth_pw), [first])
+    check(replies[0].startswith("451"),
+          f"JMAP submission to a valid recipient after the limit: {replies}, want 451")
+    codes = rcpt_codes([first], (fifth, fifth_pw))
+    check(codes == [451], f"same login over SMTP after the JMAP failures: {codes}, want [451]")
 
     check(not blocked_ips(), "no IP is banned at the end")
     unblock_all()
