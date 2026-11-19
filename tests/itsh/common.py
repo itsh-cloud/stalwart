@@ -118,7 +118,7 @@ def domain_id(name: str) -> str:
     })["id"]
 
 
-def new_account(domain: str, prefix: str) -> tuple[str, str]:
+def new_account(domain: str, prefix: str, aliases: tuple[str, ...] = ()) -> tuple[str, str]:
     """Create a user account with a random name and password; return (address, password)."""
     name = f"{prefix}-{secrets.token_hex(4)}"
     password = secrets.token_urlsafe(18)
@@ -127,5 +127,7 @@ def new_account(domain: str, prefix: str) -> tuple[str, str]:
         "name": name,
         "domainId": domain_id(domain),
         "credentials": {"0": {"@type": "Password", "secret": password}},
+        "aliases": {str(n): {"name": alias, "domainId": domain_id(domain)}
+                    for n, alias in enumerate(aliases)},
     })
     return f"{name}@{domain}", password

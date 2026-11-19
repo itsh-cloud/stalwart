@@ -23,6 +23,8 @@ that only the rate decides. It then checks, in order:
 4. A second login on the same IP is unaffected.
 5. A login on an allowlisted IP is not limited, and those failures do not
    count once the IP is no longer allowlisted.
+6. The limit follows the account across the names it signs in with: its
+   address in another case and its alias.
 """
 
 from __future__ import annotations
@@ -150,6 +152,17 @@ def main() -> None:
     # Failures from the allowlisted IP did not count towards the login.
     codes = rcpt_codes([first], (third, third_pw))
     check(codes == [250], f"same login once the IP is no longer allowlisted: {codes}, want [250]")
+    # 6. The counter belongs to the account, whatever name it signed in with.
+    alias = f"rcpt-alias-{time.monotonic_ns()}"
+    fourth, fourth_pw = common.new_account(DOMAIN, "rcpt-d", aliases=(alias,))
+    codes = rcpt_codes(missing(RATE + 1), (fourth.upper(), fourth_pw))
+    check(codes == [550] * RATE + [451],
+          f"login over the rate, signed in in upper case: {codes}, want {[550] * RATE + [451]}")
+    codes = rcpt_codes([first], (f"{alias}@{DOMAIN}", fourth_pw))
+    check(codes == [451], f"same account signed in by its alias: {codes}, want [451]")
+    codes = rcpt_codes([first], (fourth, fourth_pw))
+    check(codes == [451], f"same account signed in by its address: {codes}, want [451]")
+
     check(not blocked_ips(), "no IP is banned at the end")
     unblock_all()
     common.finish()

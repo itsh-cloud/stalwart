@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""App passwords must not authorize an OAuth client.
+"""App passwords and API keys must not authorize an OAuth client.
 
 An OAuth authorization records only the account, so a token issued from an app
 password login would carry the account's full permissions, whatever the app
 password was restricted to, and would outlive its revocation.
 
-Creates an account, an app password and a public OAuth client, then checks that
-the app password signs in over HTTP but is refused for an authorization code
-and for a device-code approval, while the account password succeeds for both.
+Creates an account, an app password, an API key and a public OAuth client, then
+checks that the app password and the API key sign in over HTTP but are refused
+for an authorization code and for a device-code approval, while the account
+password succeeds for both.
 """
 
 from __future__ import annotations
@@ -64,8 +65,14 @@ def main() -> None:
     app_password = common.create("AppPassword", {"description": "acceptance test"},
                                  auth=f"{address}:{password}")["secret"]
 
+    api_key = common.create("ApiKey", {"description": "acceptance test"},
+                            auth=f"{address}:{password}")["secret"]
+
     status, _ = common.http("GET", "/jmap/session", auth=f"{address}:{app_password}")
     check(status == 200, f"the app password signs in over HTTP (HTTP {status})")
+    status, _ = common.http("GET", "/jmap/session",
+                            headers={"Authorization": f"Bearer {api_key}"})
+    check(status == 200, f"the API key signs in over HTTP (HTTP {status})")
 
     # Authorization code
     def code_login(secret: str) -> str:
@@ -74,6 +81,8 @@ def main() -> None:
 
     result = code_login(app_password)
     check(result == "failure", f"authorization code with the app password: {result}")
+    result = code_login(api_key)
+    check(result == "failure", f"authorization code with the API key: {result}")
     result = code_login(password)
     check(result == "authenticated",
           f"authorization code with the account password: {result}")
@@ -91,6 +100,10 @@ def main() -> None:
     check(result == "failure", f"device approval with the app password: {result}")
     check(token.get("error") in ("authorization_pending", "expired_token"),
           f"the refused device code stays unapproved: {token}")
+    result, token = device_login(api_key)
+    check(result == "failure", f"device approval with the API key: {result}")
+    check(token.get("error") in ("authorization_pending", "expired_token"),
+          f"the device code refused for the API key stays unapproved: {token}")
     result, token = device_login(password)
     check(result == "verified", f"device approval with the account password: {result}")
     check("access_token" in token, f"the approved device code yields a token: {sorted(token)}")
