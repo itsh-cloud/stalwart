@@ -27,8 +27,8 @@ cuts off every other client behind it.
 
 An authenticated session now counts its failures against its login
 (`Server::is_rcpt_fail_limited` in `crates/common/src/network/security.rs`): the
-abuse ban rate's count, over a window of one hour instead of the abuse ban
-period. A login over that rate is refused with `451 4.3.0` and disconnected,
+abuse ban rate's count, over a window of one hour instead of that rate's period
+(a day by default). A login over that rate is refused with `451 4.3.0` and disconnected,
 and every later `RCPT TO` from that login is refused the same way before any
 lookup until the window ends. No IP is blocked on this path.
 
@@ -51,7 +51,7 @@ the lookup increments the counter by zero instead.
 - Unauthenticated sessions keep the IP and per-recipient ban unchanged.
 - Network clients from an allowlisted IP are exempt, as they are from the IP
   ban. JMAP submissions connect from loopback, which is always allowlisted, so
-  their exemption follows their origin instead.
+  for them the origin decides, not the IP.
 - The limit belongs to the account: signing in by an alias or in another case
   counts against the same login.
 - The per-session `maxFailures` limit (`MtaStageRcpt`) applies to both paths
@@ -65,11 +65,13 @@ the lookup increments the counter by zero instead.
 There is no IP-level backstop on this path. An attacker holding K logins behind
 one IP gets K times the rate in failed lookups per window.
 
-The one-hour window is a trade. Anyone who can sign in as the login, such as a
-misconfigured client holding one of its app passwords, can stop it from sending
-for up to an hour. In return a login can probe more addresses per day than the
-abuse ban rate allows an IP: with the default one-day period, 24 windows of the
-same count.
+The one-hour window is a trade. Whoever can make the login fail recipients can
+stop it from sending for up to an hour. That is anyone who signs in with its
+password or one of its app passwords, and anyone who can make a client of that
+login send to unknown addresses, such as a website's contact form that sends
+through the mailbox. In return a login can probe more addresses per day than
+the abuse ban rate allows an IP: with the default one-day period, 24 windows of
+the same count.
 
 Both checks fail open on a rate-store error, as upstream's IP check does.
 
