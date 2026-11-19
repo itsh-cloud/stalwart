@@ -20,7 +20,7 @@ ARG ZIG_VERSION=0.17.0
 ARG ZIG_SHA256_X86_64=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
 ARG ZIG_SHA256_AARCH64=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8
 
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.100.0-slim-trixie AS base
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.100.0-slim-trixie@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS base
 ARG ZIG_VERSION
 ARG ZIG_SHA256_X86_64
 ARG ZIG_SHA256_AARCH64
@@ -65,16 +65,16 @@ RUN rustup set profile minimal && rustup target add ${TARGET}
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --recipe-path recipe.json --zigbuild --release --target ${TARGET} \
+    cargo chef cook --locked --recipe-path recipe.json --zigbuild --release --target ${TARGET} \
       -p stalwart --no-default-features --features "${FEATURES}"
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo zigbuild --release --target ${TARGET} -p stalwart --no-default-features --features "${FEATURES}" && \
+    cargo zigbuild --locked --release --target ${TARGET} -p stalwart --no-default-features --features "${FEATURES}" && \
     mkdir -p /artifact && \
     mv target/${TARGET}/release/stalwart /artifact/stalwart
 
-FROM --platform=$TARGETPLATFORM docker.io/library/alpine:3.24.4 AS musl
+FROM --platform=$TARGETPLATFORM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS musl
 RUN apk add --update --no-cache ca-certificates curl tzdata libcap && \
     rm -rf /var/cache/apk/* && \
     addgroup -S -g 2000 stalwart && \
