@@ -20,6 +20,12 @@ the first item those attributes may sit above the SnippetBegin marker, so a gate
 can be added without editing the SEL-licensed text. A snippet that only
 continues a statement begun outside it cannot be gated and fails.
 
+Cargo features are per crate, so every gate is evaluated against the features
+`cargo tree` resolves for the crate that owns the file, and the check fails
+outright if any compiled crate has `enterprise` or `dev_mode` on. A line naming
+`SPDX-SnippetBegin` or `LicenseRef-SEL` in a form the check does not parse fails
+as well, so a marker cannot slip past it by being written differently.
+
 Files of a workspace crate this build never compiles, such as an optional
 dependency that only `enterprise` turns on, cannot reach the image and are
 skipped. `cargo tree` decides which crates are compiled, and the crates it
@@ -37,30 +43,52 @@ import sys
 SEL = "SPDX-License-Identifier: LicenseRef-SEL"
 DUAL = "AGPL-3.0-only OR LicenseRef-SEL"
 
-# Dockerfile.itsh builds --no-default-features with exactly these.
-ENABLED_FEATURES = set(re.search(
+# Dockerfile.itsh builds the stalwart crate --no-default-features with these.
+IMAGE_FEATURES = set(re.search(
     r'^ARG FEATURES="([^"]+)"', pathlib.Path("Dockerfile.itsh").read_text(), re.M,
 ).group(1).split())
+# Features that must stay off in every compiled crate.
+FORBIDDEN_FEATURES = {"enterprise", "dev_mode"}
 
 ATTR_RE = re.compile(r"#\[cfg\((.*)\)\]")
-# Workspace members that -p stalwart does not compile with ENABLED_FEATURES.
+# Workspace members that -p stalwart does not compile with IMAGE_FEATURES.
 UNBUILT_CRATES = {"crates/scim", "crates/scim-proto"}
 
-# cargo tree's `(/abs/path)` suffix on path dependencies.
-CRATE_PATH_RE = re.compile(r"\((/[^)]+)\)")
+# A package line of `cargo tree --format "{p} {f}"`: name, version, an optional
+# proc-macro marker, the `(/abs/path)` of a path dependency, then its features.
+PACKAGE_RE = re.compile(r"^\S+ v\S+(?: \(proc-macro\))? \((/[^)]+)\)(?: \(\*\))?(?: (\S*))?")
+
+# The marker lines the check understands; any other line holding one of
+# MARKERS fails. File headers sit in the leading block comment.
+MARKERS = ("SPDX-SnippetBegin", "LicenseRef-SEL")
+SNIPPET_BEGIN = "// SPDX-SnippetBegin"
+SNIPPET_LICENSE = "// SPDX-License-Identifier: LicenseRef-SEL"
+HEADER_LICENSES = (f"* {SEL}", f"* SPDX-License-Identifier: {DUAL}")
+
+# Features of each compiled crate directory, one set per resolved instance.
+CrateFeatures = dict[pathlib.Path, list[frozenset[str]]]
 
 
-def built_crate_dirs(root: pathlib.Path) -> list[pathlib.Path]:
-    """Crate directories, relative to root, that `-p stalwart` compiles here."""
+def built_crates(root: pathlib.Path) -> CrateFeatures:
+    """Crate directories, relative to root, that `-p stalwart` compiles here,
+    with the features cargo resolves for each."""
     tree = subprocess.run(
         ["cargo", "tree", "--locked", "-p", "stalwart", "--no-default-features",
-         "--features", ",".join(sorted(ENABLED_FEATURES)),
-         "--edges", "normal,build", "--target", "all",
-         "--prefix", "none", "--format", "{p}"],
+         "--features", ",".join(sorted(IMAGE_FEATURES)),
+         "--edges", "normal,build,features", "--target", "all",
+         "--prefix", "none", "--format", "{p} {f}"],
         cwd=root, check=True, stdout=subprocess.PIPE, text=True,
     ).stdout
-    dirs = {pathlib.Path(m) for m in CRATE_PATH_RE.findall(tree)}
-    built = {d.relative_to(root) for d in dirs if d.is_relative_to(root)}
+    crates: CrateFeatures = {}
+    for line in tree.splitlines():
+        match = PACKAGE_RE.match(line)
+        if not match or not pathlib.Path(match.group(1)).is_relative_to(root):
+            continue
+        features = frozenset(filter(None, (match.group(2) or "").split(",")))
+        sets = crates.setdefault(pathlib.Path(match.group(1)).relative_to(root), [])
+        if features not in sets:
+            sets.append(features)
+    built = set(crates)
     metadata = json.loads(subprocess.run(
         ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
         cwd=root, check=True, stdout=subprocess.PIPE, text=True,
@@ -71,7 +99,11 @@ def built_crate_dirs(root: pathlib.Path) -> list[pathlib.Path]:
     if unbuilt != UNBUILT_CRATES:
         sys.exit(f"crates not compiled by this build: {sorted(unbuilt)}, "
                  f"expected {sorted(UNBUILT_CRATES)}")
-    return sorted(built)
+    forbidden = sorted(f"{crate}: {feature}" for crate, sets in crates.items()
+                       for features in sets for feature in features & FORBIDDEN_FEATURES)
+    if forbidden:
+        sys.exit("features this build must not enable are on: " + ", ".join(forbidden))
+    return crates
 
 
 def declaring_files(path: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
@@ -103,8 +135,9 @@ def declaring_files(path: pathlib.Path) -> list[tuple[pathlib.Path, str]]:
     return chain
 
 
-def eval_cfg(expr: str) -> tuple[bool | None, str]:
-    """Evaluate a cfg predicate for this release build: True, False or None (unknown).
+def eval_cfg(expr: str, features: frozenset[str]) -> tuple[bool | None, str]:
+    """Evaluate a cfg predicate for a release build of a crate with these
+    features: True, False or None (unknown).
 
     Returns the value and the unparsed remainder of expr.
     """
@@ -113,7 +146,7 @@ def eval_cfg(expr: str) -> tuple[bool | None, str]:
     if op:
         rest, values = expr[op.end():], []
         while not rest.lstrip().startswith(")"):
-            value, rest = eval_cfg(rest)
+            value, rest = eval_cfg(rest, features)
             values.append(value)
             rest = rest.lstrip().removeprefix(",")
         rest = rest.lstrip()[1:]
@@ -127,7 +160,7 @@ def eval_cfg(expr: str) -> tuple[bool | None, str]:
         return not decisive, rest
     feature = re.match(r'feature\s*=\s*"([^"]+)"', expr)
     if feature:
-        return feature.group(1) in ENABLED_FEATURES, expr[feature.end():]
+        return feature.group(1) in features, expr[feature.end():]
     other = re.match(r'[A-Za-z_]\w*(\s*=\s*"[^"]*")?', expr)
     if not other:
         raise ValueError(f"cannot parse cfg: {expr!r}")
@@ -135,13 +168,16 @@ def eval_cfg(expr: str) -> tuple[bool | None, str]:
     return known.get(other.group(0)), expr[other.end():]
 
 
-def gate_excludes(line: str) -> bool:
-    """True if line holds a #[cfg(...)] that is definitely false for this build."""
+def gate_excludes(line: str, feature_sets: list[frozenset[str]]) -> bool:
+    """True if line holds a #[cfg(...)] that is definitely false for every
+    resolved feature set of its crate."""
     attr = ATTR_RE.search(line)
-    return attr is not None and eval_cfg(attr.group(1))[0] is False
+    return attr is not None and all(
+        eval_cfg(attr.group(1), features)[0] is False for features in feature_sets)
 
 
-def is_excluded(declarer: pathlib.Path, name: str) -> bool:
+def is_excluded(declarer: pathlib.Path, name: str,
+                feature_sets: list[frozenset[str]]) -> bool:
     """True if `mod <name>;` in declarer is behind a cfg this build disables."""
     body = declarer.read_text(encoding="utf-8", errors="replace")
     pattern = re.compile(
@@ -154,7 +190,7 @@ def is_excluded(declarer: pathlib.Path, name: str) -> bool:
             stripped = line.strip()
             if not stripped or stripped.startswith("//"):
                 continue
-            if gate_excludes(stripped):
+            if gate_excludes(stripped, feature_sets):
                 return True
             if not stripped.startswith("#["):
                 break
@@ -175,7 +211,31 @@ def split_attribute(text: str) -> tuple[str, str] | None:
     return None
 
 
-def ungated_snippets(text: str) -> tuple[int, list[int]]:
+def unrecognised_markers(text: str) -> list[int]:
+    """Line numbers of marker lines in a form the check does not parse."""
+    lines = text.splitlines()
+    header_end = next((n for n, line in enumerate(lines) if line.strip() == "*/"), -1)
+    bad = []
+    for n, line in enumerate(lines):
+        stripped = line.strip()
+        if not any(marker in stripped for marker in MARKERS):
+            continue
+        if stripped == SNIPPET_BEGIN:
+            license_line = next((l.strip() for l in lines[n + 1:n + 4]
+                                 if "SPDX-License-Identifier:" in l), "")
+            if license_line.startswith("// SPDX-License-Identifier: "):
+                continue
+        elif stripped == SNIPPET_LICENSE:
+            if any(l.strip() == SNIPPET_BEGIN for l in lines[max(n - 3, 0):n]):
+                continue
+        elif stripped in HEADER_LICENSES and n < header_end:
+            continue
+        bad.append(n + 1)
+    return bad
+
+
+def ungated_snippets(text: str,
+                     feature_sets: list[frozenset[str]]) -> tuple[int, list[int]]:
     """Count SEL-only snippets and return the begin lines of ungated ones."""
     lines = text.splitlines()
     count, ungated = 0, []
@@ -212,7 +272,7 @@ def ungated_snippets(text: str) -> tuple[int, list[int]]:
                     i += 1
                 if split is None:
                     break
-                gated = gated or gate_excludes(split[0])
+                gated = gated or gate_excludes(split[0], feature_sets)
                 stripped = split[1].strip()
             if not stripped or stripped.startswith(("//", "#[")):
                 continue
@@ -240,34 +300,44 @@ def ungated_snippets(text: str) -> tuple[int, list[int]]:
 
 def main() -> int:
     root = pathlib.Path(".")
-    built = built_crate_dirs(root.resolve())
+    crates = built_crates(root.resolve())
+    # Nested crates, such as crates/trc/event-macro, own their own files.
+    crate_dirs = sorted(crates, key=lambda d: len(d.parts), reverse=True)
     ungated: list[str] = []
+    unrecognised: list[str] = []
     checked = snippets = 0
 
     for path in sorted(root.rglob("*.rs")):
         # `target` and the unbuilt crates fall outside every crate the image compiles.
-        if not any(path.is_relative_to(d) for d in built):
+        crate = next((d for d in crate_dirs if path.is_relative_to(d)), None)
+        if crate is None:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
+        unrecognised.extend(f"{path}:{n}" for n in unrecognised_markers(text))
         if SEL not in text:
             continue
         if DUAL not in text:
             checked += 1
             found = [str(path)]
         else:
-            count, lines = ungated_snippets(text)
+            count, lines = ungated_snippets(text, crates[crate])
             snippets += count
             found = [f"{path}:{n}" for n in lines]
-        if found and not any(is_excluded(d, n) for d, n in declaring_files(path)):
+        if found and not any(is_excluded(d, n, crates[crate])
+                             for d, n in declaring_files(path)):
             ungated.extend(found)
 
+    if unrecognised:
+        print("SPDX marker lines in a form this check does not parse:")
+        for p in unrecognised:
+            print(f"  {p}")
     if ungated:
         print("SEL-licensed files reachable in the ITSH build:")
         for p in ungated:
             print(f"  {p}")
+    if unrecognised or ungated:
         print(f"\nchecked {checked} SEL-only files and {snippets} SEL-only "
-              f"snippets; enabled features: "
-              f"{' '.join(sorted(ENABLED_FEATURES))}")
+              f"snippets; image features: {' '.join(sorted(IMAGE_FEATURES))}")
         return 1
 
     print(f"All {checked} SEL-only files and {snippets} SEL-only snippets are "
