@@ -17,7 +17,7 @@ use registry::{
         prelude::{Object, ObjectInner, ObjectType},
         structs::{self, AllowedIp, BlockedIp, Rate, SystemSettings},
     },
-    types::{datetime::UTCDateTime, ipmask::IpAddrOrMask},
+    types::{datetime::UTCDateTime, duration::Duration, ipmask::IpAddrOrMask},
 };
 use std::{fmt::Debug, hash::Hash, net::IpAddr};
 use store::{
@@ -279,7 +279,10 @@ impl Server {
     // prefix of their own, as KV_RATE_LIMIT_RCPT keys derive from client input.
     pub async fn is_rcpt_fail_limited(&self, login: &str, count: bool) -> trc::Result<bool> {
         match &self.core.network.security.rcpt_fail_rate {
-            Some(rate) => is_login_rcpt_limited(self.in_memory_store(), rate, login, count).await,
+            Some(rate) => {
+                is_login_rcpt_limited(self.in_memory_store(), &login_rcpt_rate(rate), login, count)
+                    .await
+            }
             None => Ok(false),
         }
     }
@@ -628,6 +631,17 @@ impl<T: PartialEq + Eq + Hash> IpWithTtl<T> {
 #[path = "../../../../../stalwart-tests/unit/common/src/network/security/tests.rs"]
 mod tests;
 
+// A login over the limit cannot send, so its window is an hour rather than the
+// abuse ban period, which is a day by default; the count is the abuse rate's.
+const LOGIN_RCPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+
+fn login_rcpt_rate(abuse_rate: &Rate) -> Rate {
+    Rate {
+        count: abuse_rate.count,
+        period: Duration(LOGIN_RCPT_WINDOW),
+    }
+}
+
 // Counts one failure when `count` is set, otherwise only reads the counter.
 async fn is_login_rcpt_limited(
     store: &InMemoryStore,
@@ -652,7 +666,6 @@ async fn is_login_rcpt_limited(
 #[cfg(test)]
 mod rcpt_auth_tests {
     use super::*;
-    use registry::types::duration::Duration;
     use std::sync::Arc;
     use store::backend::local::LocalStore;
 
@@ -666,6 +679,16 @@ mod rcpt_auth_tests {
                 period: Duration(std::time::Duration::from_secs(3600)),
             },
         )
+    }
+
+    #[test]
+    fn rcpt_login_window_is_one_hour_at_the_abuse_count() {
+        let rate = login_rcpt_rate(&Rate {
+            count: 35,
+            period: Duration(std::time::Duration::from_secs(86400)),
+        });
+        assert_eq!(rate.count, 35);
+        assert_eq!(rate.period.0, std::time::Duration::from_secs(3600));
     }
 
     async fn limited(store: &InMemoryStore, rate: &Rate, login: &str, count: bool) -> bool {
