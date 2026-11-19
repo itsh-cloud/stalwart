@@ -279,10 +279,7 @@ impl Server {
     // prefix of their own, as KV_RATE_LIMIT_RCPT keys derive from client input.
     pub async fn is_rcpt_fail_limited(&self, login: &str, count: bool) -> trc::Result<bool> {
         match &self.core.network.security.rcpt_fail_rate {
-            Some(rate) => {
-                is_login_rcpt_limited(self.in_memory_store(), &login_rcpt_rate(rate), login, count)
-                    .await
-            }
+            Some(rate) => is_login_rcpt_limited(self.in_memory_store(), rate, login, count).await,
             None => Ok(false),
         }
     }
@@ -645,11 +642,12 @@ fn login_rcpt_rate(abuse_rate: &Rate) -> Rate {
 // Counts one failure when `count` is set, otherwise only reads the counter.
 async fn is_login_rcpt_limited(
     store: &InMemoryStore,
-    rate: &Rate,
+    abuse_rate: &Rate,
     login: &str,
     count: bool,
 ) -> trc::Result<bool> {
-    let window = RateWindow::new(rate, now());
+    let rate = login_rcpt_rate(abuse_rate);
+    let window = RateWindow::new(&rate, now());
     let key = blake3::hash(login.as_bytes());
     store
         .key_incr(
@@ -689,6 +687,27 @@ mod rcpt_auth_tests {
         });
         assert_eq!(rate.count, 35);
         assert_eq!(rate.period.0, std::time::Duration::from_secs(3600));
+    }
+
+    #[tokio::test]
+    async fn rcpt_login_counter_uses_the_one_hour_window() {
+        let (store, _) = setup();
+        let abuse_rate = Rate {
+            count: 3,
+            period: Duration(std::time::Duration::from_secs(86400)),
+        };
+        assert!(!limited(&store, &abuse_rate, LOGIN, true).await);
+        let key = blake3::hash(LOGIN.as_bytes());
+        let bucket = |rate: &Rate| {
+            RateWindow::new(rate, now()).bucket(KV_RATE_LIMIT_RCPT_AUTH, key.as_bytes())
+        };
+        assert!(
+            store
+                .key_exists(bucket(&login_rcpt_rate(&abuse_rate)))
+                .await
+                .unwrap()
+        );
+        assert!(!store.key_exists(bucket(&abuse_rate)).await.unwrap());
     }
 
     async fn limited(store: &InMemoryStore, rate: &Rate, login: &str, count: bool) -> bool {
