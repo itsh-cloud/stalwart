@@ -262,8 +262,14 @@ def ungated_snippets(text: str,
             line = lines[i]
             i += 1
             stripped = line.strip()
-            if (not stripped or stripped.startswith("//")
-                    or len(line) - len(line.lstrip()) > indent):
+            if not stripped or stripped.startswith("//"):
+                continue
+            if len(line) - len(line.lstrip()) > indent:
+                # Nested in an item above it, or, before the first item, in a
+                # block opened outside the snippet that no gate here reaches.
+                if not items:
+                    complete = False
+                    break
                 continue
             # Attributes, which may span lines or share one with the item.
             while stripped.startswith("#["):
