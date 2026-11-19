@@ -650,7 +650,7 @@ async fn is_login_rcpt_limited(
 }
 
 #[cfg(test)]
-mod tests {
+mod rcpt_auth_tests {
     use super::*;
     use registry::types::duration::Duration;
     use std::sync::Arc;

@@ -65,7 +65,7 @@ a second login, a check that does not count, recipients that spell the login or
 its key, and the reset by prefix:
 
 ```sh
-cargo test -p common --lib network::security::tests
+cargo test -p common --lib network::security::rcpt_auth_tests
 ```
 
 `tests/itsh/rcpt_fail_limit.py` checks the session end to end: the
