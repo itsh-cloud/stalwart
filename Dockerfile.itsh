@@ -62,10 +62,12 @@ ARG TARGET
 ARG FEATURES
 RUN rustup set profile minimal && rustup target add ${TARGET}
 # Dependencies first, so a source-only change does not rebuild the world.
+# cook cannot take --locked: cargo-chef masks local versions but not the lock's
+# "http <version>" reference to the local http crate. zigbuild below is locked.
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --locked --recipe-path recipe.json --zigbuild --release --target ${TARGET} \
+    cargo chef cook --recipe-path recipe.json --zigbuild --release --target ${TARGET} \
       -p stalwart --no-default-features --features "${FEATURES}"
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
