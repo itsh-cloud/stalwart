@@ -414,15 +414,18 @@ impl<T: SessionStream> Session<T> {
         self.data.rcpt_errors += 1;
         let has_too_many_errors = self.data.rcpt_errors >= self.params.rcpt_errors_max;
 
-        let result = if let Some(login) = self.rcpt_fail_login() {
+        let (result, failed_check) = if let Some(login) = self.rcpt_fail_login() {
             match self.server.is_rcpt_fail_limited(login, true).await {
                 Ok(true) => return self.reject_rcpt_fail_limited(rcpt).await,
-                result => result,
+                result => (result, "Failed to check recipient failure limit."),
             }
         } else {
-            self.server
-                .is_rcpt_fail2banned(self.data.remote_ip, &rcpt)
-                .await
+            (
+                self.server
+                    .is_rcpt_fail2banned(self.data.remote_ip, &rcpt)
+                    .await,
+                "Failed to check if IP should be banned.",
+            )
         };
 
         match result {
@@ -448,7 +451,7 @@ impl<T: SessionStream> Session<T> {
                 trc::error!(
                     err.span_id(self.data.session_id)
                         .caused_by(trc::location!())
-                        .details("Failed to check if IP should be banned.")
+                        .details(failed_check)
                 );
             }
         }
