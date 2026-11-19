@@ -12,6 +12,7 @@ pub mod data;
 pub mod dkim;
 pub mod ehlo;
 pub mod hooks;
+pub mod login_limit;
 pub mod mail;
 pub mod milter;
 pub mod rcpt;

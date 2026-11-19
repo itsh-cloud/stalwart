@@ -35,7 +35,7 @@ use jmap_tools::{Key, Map, Value};
 use registry::schema::enums::StorageQuota;
 use smtp::{
     core::{Session, SessionData},
-    inbound::data::MessageOrigin,
+    inbound::{data::MessageOrigin, login_limit::SessionOrigin},
     queue::spool::SmtpSpool,
 };
 use smtp_proto::{MailFrom, RcptTo, request::parser::Rfc5321Parser};
@@ -708,6 +708,7 @@ impl EmailSubmissionSet for Server {
                 0,
             ),
         );
+        session.data.origin = SessionOrigin::Submission;
 
         // Spawn SMTP session to avoid overflowing the stack
         let handle = tokio::spawn(async move {

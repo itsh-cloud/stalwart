@@ -4,7 +4,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-SEL
  */
 
-use crate::{inbound::auth::SaslToken, queue::QueueId};
+use crate::{
+    inbound::{auth::SaslToken, login_limit::SessionOrigin},
+    queue::QueueId,
+};
 use common::{
     Inner, Server,
     auth::AccountInfo,
@@ -104,6 +107,7 @@ pub struct SessionData {
     pub spf_ehlo: Option<SpfOutput>,
     pub spf_mail_from: Option<SpfOutput>,
     pub dnsbl_error: Option<Vec<u8>>,
+    pub origin: SessionOrigin,
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +186,7 @@ impl SessionData {
             spf_ehlo: None,
             spf_mail_from: None,
             dnsbl_error: None,
+            origin: SessionOrigin::Network,
         }
     }
 }
@@ -319,6 +324,7 @@ impl SessionData {
             spf_ehlo: None,
             spf_mail_from: None,
             dnsbl_error: None,
+            origin: SessionOrigin::Internal,
         }
     }
 }

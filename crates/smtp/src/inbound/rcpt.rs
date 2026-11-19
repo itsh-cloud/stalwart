@@ -464,43 +464,4 @@ impl<T: SessionStream> Session<T> {
             Err(())
         }
     }
-
-    // Authenticated sessions are limited per login instead of per IP, so that one
-    // client cannot get an egress IP shared with others banned. Allowlisted IPs,
-    // which include the loopback used by internal submissions, are exempt.
-    fn rcpt_fail_login(&self) -> Option<&str> {
-        self.authenticated_as()
-            .filter(|_| !self.server.is_ip_allowed(self.data.remote_ip))
-    }
-
-    // Checked before any lookup, so that reconnecting does not let a login over
-    // its failure limit keep probing addresses.
-    async fn is_rcpt_fail_login_limited(&self) -> bool {
-        let Some(login) = self.rcpt_fail_login() else {
-            return false;
-        };
-        match self.server.is_rcpt_fail_limited(login, false).await {
-            Ok(is_limited) => is_limited,
-            Err(err) => {
-                trc::error!(
-                    err.span_id(self.data.session_id)
-                        .caused_by(trc::location!())
-                        .details("Failed to check recipient failure limit.")
-                );
-                false
-            }
-        }
-    }
-
-    async fn reject_rcpt_fail_limited(&mut self, rcpt: String) -> Result<(), ()> {
-        trc::event!(
-            Smtp(SmtpEvent::TooManyInvalidRcpt),
-            SpanId = self.data.session_id,
-            AccountName = CompactString::from(self.authenticated_as().unwrap_or_default()),
-            To = rcpt,
-        );
-        self.write(b"451 4.3.0 Too many errors, disconnecting.\r\n")
-            .await?;
-        Err(())
-    }
 }
