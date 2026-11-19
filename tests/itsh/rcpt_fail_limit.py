@@ -21,7 +21,8 @@ that only the rate decides. It then checks, in order:
    not banned.
 3. That login is refused again on reconnecting, before any lookup.
 4. A second login on the same IP is unaffected.
-5. A login on an allowlisted IP is not limited.
+5. A login on an allowlisted IP is not limited, and those failures do not
+   count once the IP is no longer allowlisted.
 """
 
 from __future__ import annotations
@@ -144,10 +145,11 @@ def main() -> None:
     codes = rcpt_codes(missing(RATE + 2), (third, third_pw))
     check(codes == [550] * (RATE + 2),
           f"login on an allowlisted IP: {codes}, want {[550] * (RATE + 2)}")
-    codes = rcpt_codes([first], (third, third_pw))
-    check(codes == [250], f"allowlisted login reconnecting: {codes}, want [250]")
     common.jmap("x:AllowedIp/set", {"destroy": [allowed["id"]]})
     common.reload_settings()
+    # Failures from the allowlisted IP did not count towards the login.
+    codes = rcpt_codes([first], (third, third_pw))
+    check(codes == [250], f"same login once the IP is no longer allowlisted: {codes}, want [250]")
     check(not blocked_ips(), "no IP is banned at the end")
     unblock_all()
     common.finish()
