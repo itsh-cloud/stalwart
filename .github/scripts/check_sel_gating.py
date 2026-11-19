@@ -276,14 +276,22 @@ def ungated_snippets(text: str,
                 stripped = split[1].strip()
             if not stripped or stripped.startswith(("//", "#[")):
                 continue
-            # A method-chain link, or the brace or operator after a multi-line
-            # condition or match pattern, continues the statement above it.
+            # A method-chain link, the brace or operator after a multi-line
+            # condition or match pattern, or a closing bracket followed by more
+            # code (`} else {`) continues the statement above it. Before the
+            # snippet's first item that statement began outside the snippet,
+            # where no gate inside it can reach.
+            closes = stripped[0] in "})]"
             continues = stripped[0] == "." or (
-                open_expr and stripped.startswith(("{", "|", "&&")))
+                open_expr and stripped.startswith(("{", "|", "&&"))) or (
+                closes and stripped.lstrip("})]; ,") != "")
             open_expr = not stripped.endswith((";", "}", ","))
+            if continues and not items:
+                complete = False
+                break
             if continues:
                 continue
-            if stripped[0] not in "})]":
+            if not closes:
                 if not gated:
                     complete = False
                     break
