@@ -534,7 +534,7 @@ impl<T: PartialEq + Eq + Hash> IpWithTtl<T> {
 }
 
 // A login over the limit cannot send, so its window is an hour rather than the
-// abuse ban period, which is a day by default; the count is the abuse rate's.
+// abuse ban rate's period, a day by default; the count is that rate's.
 const LOGIN_RCPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
 
 fn login_rcpt_rate(abuse_rate: &Rate) -> Rate {
