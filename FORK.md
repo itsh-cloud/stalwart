@@ -207,10 +207,11 @@ client sending to non-existent local recipients gets the shared IP banned and
 cuts off every other client behind it.
 
 An authenticated session now counts its failures against its login
-(`Server::is_rcpt_fail_limited` in `crates/common/src/network/security.rs`), at
-the same abuse ban rate. A login over that rate is refused with `451 4.3.0` and
-disconnected, and every later `RCPT TO` from that login is refused the same way
-before any lookup until the rate window ends. No IP is blocked on this path.
+(`Server::is_rcpt_fail_limited` in `crates/common/src/network/security.rs`): the
+abuse ban rate's count, over a window of one hour instead of the abuse ban
+period. A login over that rate is refused with `451 4.3.0` and disconnected,
+and every later `RCPT TO` from that login is refused the same way before any
+lookup until the window ends. No IP is blocked on this path.
 
 The counter has its own key prefix, `KV_RATE_LIMIT_RCPT_AUTH` (28). The
 per-recipient counter's keys are bytes the client supplies, and a quoted local
@@ -232,6 +233,12 @@ sender exhaust any login's limit.
 There is no IP-level backstop on this path. An attacker holding K logins behind
 one IP gets K times the rate in failed lookups per window.
 
+The one-hour window is a trade. Anyone who can sign in as the login, such as a
+misconfigured client holding one of its app passwords, can stop it from sending
+for up to an hour. In return a login can probe more addresses per day than the
+abuse ban rate allows an IP: with the default one-day period, 24 windows of the
+same count.
+
 Both checks fail open on a rate-store error, as upstream's IP check does.
 
 ### Accepting the change
@@ -240,7 +247,8 @@ Both checks fail open on a rate-store error, as upstream's IP check does.
 ban, a forged recipient that spells a login's counter key, the authenticated
 refusal without a ban, the refusal of a reconnecting login, an unaffected second
 login on the same IP, and an allowlisted IP. Run it with
-`STORE=RocksDb cargo test -p tests --lib smtp::inbound::rcpt`.
+`STORE=RocksDb cargo test -p tests --lib smtp::inbound::rcpt`. A unit test pins
+the one-hour window: `cargo test -p common --lib network::security::rcpt_auth_tests`.
 
 ## Licensing and the build
 
@@ -378,12 +386,20 @@ image, Zig, cargo-chef and cargo-zigbuild are the versions upstream's
 `Dockerfile.build` pinned at v0.16.25. At v0.16.26 upstream moved to Zig 0.17.0,
 an unpinned Rust image and a cargo-zigbuild built from an unreleased commit; this
 build stays on the 0.16.25 toolchain until those are released and pinnable.
+Both base images are pinned by digest as well as tag (the runtime stage on
+Alpine 3.24.4, which the `0.16.27-itsh.2` image was built on), the dependency
+build and the server build run with `--locked`, and the workflows pin every
+action to a commit SHA.
 
 The `opentelemetry` git dependencies point at `itsh-cloud/opentelemetry-rust`,
 branch `stalwart-0.16`, at the revision upstream's 0.16 lockfile pins
 (`ae66e97b`). Upstream's own `stalwartlabs/opentelemetry-rust` is no longer
 public, so no 0.16 release builds from source against it. Upstream dropped it
 after v1.0.0.
+
+hickory-dns is mirrored at the locked SHA (`f8b92b17`) in `itsh-cloud/hickory-dns`,
+branch `stalwart/0.26`. If upstream's repository becomes unavailable, point the
+`[patch.crates-io]` entries at the mirror with `rev = "<sha>"`, as for OpenTelemetry.
 
 ## Contributing upstream
 
