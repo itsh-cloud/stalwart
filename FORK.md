@@ -209,9 +209,9 @@ cuts off every other client behind it.
 An authenticated session now counts its failures against its login
 (`Server::is_rcpt_fail_limited` in `crates/common/src/network/security.rs`): the
 abuse ban rate's count, over a window of one hour instead of that rate's period
-(a day by default). A login over that rate is refused with `451 4.3.0` and disconnected,
-and every later `RCPT TO` from that login is refused the same way before any
-lookup until the window ends. No IP is blocked on this path.
+(a day by default). A login over that rate is refused with `451 4.3.0` and
+disconnected, and every later `RCPT TO` from that login is refused the same way
+before any lookup until the window ends. No IP is blocked on this path.
 
 The counter has its own key prefix, `KV_RATE_LIMIT_RCPT_AUTH` (28). The
 per-recipient counter's keys are bytes the client supplies, and a quoted local
@@ -250,7 +250,13 @@ ban, a forged recipient that spells a login's counter key, the authenticated
 refusal without a ban, the refusal of a reconnecting login, an unaffected second
 login on the same IP, and an allowlisted IP. Run it with
 `STORE=RocksDb cargo test -p tests --lib smtp::inbound::rcpt`. A unit test pins
-the one-hour window: `cargo test -p common --lib network::security::rcpt_auth_tests`.
+the one-hour window:
+`cargo test -p common --lib network::security::rcpt_auth_tests`.
+
+At v0.16.27 the `tests` crate does not compile as upstream ships it:
+`tests/src/webdav/cal_itip.rs:280` still calls `itip_merge_changes` without the
+`itip` argument it gained. The `tests` command above runs once that call passes
+`&message.message` as its second argument. The unit test does not need it.
 
 ## Licensing and the build
 
