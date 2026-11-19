@@ -17,7 +17,7 @@ use registry::{
         prelude::{Object, ObjectType},
         structs::{self, AllowedIp, BlockedIp, Rate, SystemSettings},
     },
-    types::{datetime::UTCDateTime, ipmask::IpAddrOrMask},
+    types::{datetime::UTCDateTime, duration::Duration, ipmask::IpAddrOrMask},
 };
 use std::{fmt::Debug, hash::Hash, net::IpAddr};
 use store::{
@@ -246,7 +246,12 @@ impl Server {
         if let Some(rate) = &self.core.network.security.rcpt_fail_rate {
             return self
                 .in_memory_store()
-                .is_rate_allowed(KV_RATE_LIMIT_RCPT_AUTH, login.as_bytes(), rate, !count)
+                .is_rate_allowed(
+                    KV_RATE_LIMIT_RCPT_AUTH,
+                    login.as_bytes(),
+                    &login_rcpt_rate(rate),
+                    !count,
+                )
                 .await
                 .map(|limited| limited.is_some());
         }
@@ -525,5 +530,31 @@ impl<T: PartialEq + Eq + Hash> IpWithTtl<T> {
 
     pub fn is_expired(&self) -> bool {
         self.expires_at <= now()
+    }
+}
+
+// A login over the limit cannot send, so its window is an hour rather than the
+// abuse ban period, which is a day by default; the count is the abuse rate's.
+const LOGIN_RCPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(3600);
+
+fn login_rcpt_rate(abuse_rate: &Rate) -> Rate {
+    Rate {
+        count: abuse_rate.count,
+        period: Duration(LOGIN_RCPT_WINDOW),
+    }
+}
+
+#[cfg(test)]
+mod rcpt_auth_tests {
+    use super::*;
+
+    #[test]
+    fn rcpt_login_window_is_one_hour_at_the_abuse_count() {
+        let rate = login_rcpt_rate(&Rate {
+            count: 35,
+            period: Duration(std::time::Duration::from_secs(86400)),
+        });
+        assert_eq!(rate.count, 35);
+        assert_eq!(rate.period.0, std::time::Duration::from_secs(3600));
     }
 }
