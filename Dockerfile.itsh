@@ -62,9 +62,29 @@ ARG TARGET
 ARG FEATURES
 RUN rustup set profile minimal && rustup target add ${TARGET}
 # Dependencies first, so a source-only change does not rebuild the world.
-# cook cannot take --locked: cargo-chef masks local versions but not the lock's
-# "http <version>" reference to the local http crate. zigbuild below is locked.
 COPY --from=planner /app/recipe.json recipe.json
+# cook cannot take --locked (cargo-chef keeps the lock's "http <version>" entry
+# for the local http crate), so before any build script runs, check that its
+# skeleton resolves exactly the third-party packages Cargo.lock pins.
+COPY Cargo.lock /tmp/real.lock
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    set -e; \
+    cargo chef cook --no-build --recipe-path recipe.json --release --target ${TARGET} \
+      -p stalwart --no-default-features --features "${FEATURES}"; \
+    cargo fetch --target ${TARGET}; \
+    pins='/^\[\[package\]\]/ { if (s != "") print n, v, s, c; n = v = s = c = "" } /^name = / { n = $3 } /^version = / { v = $3 } /^source = / { s = $3 } /^checksum = / { c = $3 } END { if (s != "") print n, v, s, c }'; \
+    awk "$pins" Cargo.lock > /tmp/resolved.raw; \
+    awk "$pins" /tmp/real.lock > /tmp/locked.raw; \
+    sort /tmp/resolved.raw > /tmp/resolved.pins; \
+    sort /tmp/locked.raw > /tmp/locked.pins; \
+    if [ ! -s /tmp/locked.pins ]; then echo "lock check: no third-party packages in Cargo.lock" >&2; exit 1; fi; \
+    if ! cmp -s /tmp/locked.pins /tmp/resolved.pins; then \
+        echo "lock check: cargo chef cook resolves third-party packages other than those Cargo.lock pins:" >&2; \
+        diff /tmp/locked.pins /tmp/resolved.pins >&2; \
+        exit 1; \
+    fi; \
+    echo "lock check: $(wc -l < /tmp/locked.pins) third-party packages match Cargo.lock"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo chef cook --recipe-path recipe.json --zigbuild --release --target ${TARGET} \

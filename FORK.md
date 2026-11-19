@@ -192,8 +192,10 @@ Both base images are pinned by digest as well as tag, the server build runs
 with `--locked`, and `itsh-image.yml` pins every action to a commit SHA. The
 dependency build (`cargo chef cook`) cannot: cargo-chef masks local crate
 versions to 0.0.1 but leaves the lock's `http 1.1.1` reference to the local
-`http` crate, so `--locked` always refuses it. It only fills the layer cache;
-the server build compiles against the real lock.
+`http` crate, so `--locked` always refuses it. Before cook runs any build
+script, the build resolves and fetches its skeleton and fails unless every
+third-party package's name, version, source and checksum matches
+`Cargo.lock`, so cook's graph differs from the lock only in the local crates.
 
 The two git dependencies in `[patch.crates-io]`, hickory-dns and rust-rocksdb,
 are mirrored at the locked SHAs in `itsh-cloud/hickory-dns` and
