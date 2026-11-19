@@ -147,15 +147,23 @@ The check asks `cargo tree` which workspace crates this build compiles and with
 which features, fails unless the ones left out are exactly `scim` and
 `scim-proto`, and skips their files. It fails outright if `enterprise` or
 `dev_mode` is on in any compiled crate, which a dependency edge can do without
-touching `Dockerfile.itsh`. It then resolves each SEL-only file's real parent
-module chain and accepts a gate only when its `cfg` is false for the features
+touching `Dockerfile.itsh`. It then follows each SEL-only file's parent module
+chain, inferred from the directory layout, and accepts a gate only when its
+`cfg` is false for the features
 of the crate that holds the file, since features are per crate. A snippet needs
 such a gate on every item or statement at its own indentation, either above it
 or leading its line, and a gate may span lines; a snippet that opens by
 continuing a statement from outside it counts as ungated. Gating on a feature
 the crate has on excludes nothing. A line naming `SPDX-SnippetBegin` or
 `LicenseRef-SEL` in any form other than the file headers and snippet markers
-upstream uses fails the check, so a marker cannot pass unseen.
+upstream uses fails the check, so a marker cannot pass unseen. A snippet whose
+code sits nested in a block opened before it counts as ungated too.
+
+A file pulled in by `include!` or `#[path]` escapes that directory inference, so
+`Dockerfile.itsh` checks the binary itself as well: after the build it reads the
+dep-info file cargo writes next to it, which lists every source the compiler
+read, and fails if any of them carries the SEL-only file header, or if the file
+is missing or lists no sources.
 
 The feature set is otherwise identical to upstream's image:
 `sqlite postgres mysql rocks s3 redis keep azure nats`. The runtime stage

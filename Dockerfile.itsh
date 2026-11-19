@@ -70,8 +70,23 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo zigbuild --locked --release --target ${TARGET} -p stalwart --no-default-features --features "${FEATURES}" && \
-    mkdir -p /artifact && \
+    cargo zigbuild --locked --release --target ${TARGET} -p stalwart --no-default-features --features "${FEATURES}"
+# check_sel_gating.py infers module chains from the directory layout, so it
+# cannot see a SEL-only file pulled in by include!() or #[path]. The dep-info
+# file cargo writes next to the binary lists every source the compiler read.
+RUN deps="target/${TARGET}/release/stalwart.d"; \
+    if [ ! -s "$deps" ]; then echo "dep-info $deps is missing or empty" >&2; exit 1; fi; \
+    sources=$(sed -e 's/^[^:]*: //' "$deps" | tr ' ' '\n' | grep '\.rs$'); \
+    if [ -z "$sources" ]; then echo "dep-info $deps lists no Rust sources" >&2; exit 1; fi; \
+    found=""; \
+    for src in $sources; do \
+        if [ ! -f "$src" ]; then echo "dep-info lists a missing source: $src" >&2; exit 1; fi; \
+        if grep -qxF ' * SPDX-License-Identifier: LicenseRef-SEL' "$src"; then \
+            echo "SEL-only source compiled into the image: $src" >&2; found=1; \
+        fi; \
+    done; \
+    if [ -n "$found" ]; then exit 1; fi
+RUN mkdir -p /artifact && \
     mv target/${TARGET}/release/stalwart /artifact/stalwart
 
 FROM --platform=$TARGETPLATFORM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS musl
